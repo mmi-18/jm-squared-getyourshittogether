@@ -1,0 +1,81 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+ * Design tokens — sourced from the spec (section 6). Light + dark variants;
+ * the .dark class swaps the lot. Tailwind 4's @theme inline lets us expose
+ * them as utility classes (`bg-background`, `text-foreground`, …).
+ */
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-surface: var(--surface);
+  --color-muted: var(--hover);
+  --color-muted-foreground: var(--text-muted);
+  --color-subtle: var(--text-subtle);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-q1: var(--q1-accent);
+  --color-q2: var(--q2-accent);
+  --color-q3: var(--q3-accent);
+  --color-q4: var(--q4-accent);
+  --color-accent: var(--accent);
+
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+}
+
+:root {
+  /* Light theme */
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --text-subtle: #94a3b8;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --hover: #f1f5f9;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 14px rgba(15, 23, 42, 0.10);
+  --q1-accent: #dc2626;
+  --q2-accent: #2563eb;
+  --q3-accent: #d97706;
+  --q4-accent: #64748b;
+  --accent: #6366f1;
+}
+
+.dark {
+  /* Dark theme — same hues, slightly desaturated quadrant accents */
+  --bg: #0b1220;
+  --surface: #131c2e;
+  --text: #e5e7eb;
+  --text-muted: #94a3b8;
+  --text-subtle: #64748b;
+  --border: #1f2a44;
+  --border-strong: #2c3a5b;
+  --hover: #1a2540;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.5);
+  --q1-accent: #ef4444;
+  --q2-accent: #3b82f6;
+  --q3-accent: #f59e0b;
+  --q4-accent: #94a3b8;
+  --accent: #818cf8;
+}
+
+* { box-sizing: border-box; }
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  background: var(--bg);
+  color: var(--text);
+  transition: background 150ms, color 150ms;
+}
+@media (max-width: 600px) {
+  body { font-size: 15px; }
+}

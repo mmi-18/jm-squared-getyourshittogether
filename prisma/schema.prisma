@@ -1,0 +1,242 @@
+// getyourshittogether — full schema (BetterAuth + domain).
+//
+// One Postgres, two concerns: auth tables (User/Session/Account/Verification)
+// are managed by BetterAuth; the rest are domain tables for the Eisenhower
+// Matrix task manager.
+//
+// Conventions (mirroring glimpse):
+// - PascalCase model names + camelCase field names. No @map/@@map; the DB
+//   gets quoted identifiers in the same case.
+// - All ids are cuid().
+// - timestamptz everywhere, @db.Date for date-only columns (deadlines).
+// - Json for the user's persisted filter state.
+// - No CHECK constraints / triggers / RLS — those move to the app layer
+//   (server actions enforce ownership; auth happens via BetterAuth session).
+// - `deletedAt` is a soft-delete tombstone on every user-mutable table. The
+//   sync engine reads (updatedAt > clientLastSync OR deletedAt > clientLastSync)
+//   to ship deletions across devices. A nightly job GCs rows older than 30 days.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ENUMS
+// ════════════════════════════════════════════════════════════════════════════
+
+enum Theme {
+  light
+  dark
+  system
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// AUTH (BetterAuth-managed)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// BetterAuth's Prisma adapter writes/reads these four tables. `User` is
+// extended with domain `additionalFields` (theme, timezone, defaultFilters,
+// lastSyncAt) so we don't need a parallel UserSettings table.
+
+model User {
+  // ── BetterAuth core fields ────────────────────────────────────────────────
+  id            String   @id @default(cuid())
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  name          String?
+  image         String?
+  createdAt     DateTime @default(now()) @db.Timestamptz
+  updatedAt     DateTime @updatedAt @db.Timestamptz
+
+  // ── Domain additional fields ──────────────────────────────────────────────
+  theme          Theme     @default(system)
+  // IANA TZ identifier (e.g. "Europe/Berlin"). Stamped from the browser at
+  // signup; user can change it in settings. Used by schedule recurrence math.
+  timezone       String    @default("UTC")
+  // Persisted filter state (selected tag IDs, "show completed", "only with
+  // deadline", expanded sub-tag panels). Restored on every device.
+  defaultFilters Json      @default("{}")
+  // Watermark for the sync engine. Updated on every successful pull from a
+  // device — used to short-circuit "nothing changed since last sync".
+  lastSyncAt     DateTime? @db.Timestamptz
+
+  // ── Relations ─────────────────────────────────────────────────────────────
+  sessions  Session[]
+  accounts  Account[]
+  tasks     Task[]
+  tags      Tag[]
+  schedules ScheduledTask[]
+}
+
+model Session {
+  id        String   @id
+  userId    String
+  expiresAt DateTime @db.Timestamptz
+  token     String   @unique
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Account {
+  id                    String    @id
+  userId                String
+  accountId             String
+  providerId            String
+  accessToken           String?
+  refreshToken          String?
+  accessTokenExpiresAt  DateTime? @db.Timestamptz
+  refreshTokenExpiresAt DateTime? @db.Timestamptz
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @db.Timestamptz
+  updatedAt             DateTime  @updatedAt @db.Timestamptz
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime @db.Timestamptz
+  createdAt  DateTime @default(now()) @db.Timestamptz
+  updatedAt  DateTime @updatedAt @db.Timestamptz
+
+  @@index([identifier])
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TAGS
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Hierarchical (self-referential parent). `inheritColor` means "use parent's
+// effective color" — the app walks up the chain to find the first ancestor
+// with inheritColor=false. Root tags always have inheritColor=false (enforced
+// in the app, not the DB).
+
+model Tag {
+  id           String    @id @default(cuid())
+  userId       String
+  name         String
+  color        String    @default("#6b7280")
+  parentId     String?
+  inheritColor Boolean   @default(false)
+  sortOrder    Int       @default(0)
+  deletedAt    DateTime? @db.Timestamptz
+  createdAt    DateTime  @default(now()) @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @db.Timestamptz
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent   Tag?      @relation("TagHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children Tag[]     @relation("TagHierarchy")
+  tasks    TaskTag[]
+
+  @@index([userId])
+  @@index([parentId])
+  @@index([userId, updatedAt])
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TASKS
+// ════════════════════════════════════════════════════════════════════════════
+//
+// `quadrant` is 1-4 (1=Urgent+Important, 2=Important, 3=Urgent, 4=Neither).
+// Validated in the app layer, not as a Prisma enum (cheaper than four enum
+// names that don't carry meaning).
+//
+// Subtasks via self-referential `parentId`. Drag-to-nest sets parentId; drag
+// across quadrants updates `quadrant` of the moved task and (in app code) all
+// its descendants.
+//
+// Scheduled-task idempotency: when the cron runner inserts a task generated
+// from a ScheduledTask, it stamps (scheduleId, scheduledForDate). The unique
+// constraint guarantees the same schedule can't produce duplicates for the
+// same calendar day, even under concurrent runs (server cron + client catch-up).
+
+model Task {
+  id               String    @id @default(cuid())
+  userId           String
+  parentId         String?
+  title            String
+  notes            String    @default("")
+  quadrant         Int
+  deadline         DateTime? @db.Date
+  completed        Boolean   @default(false)
+  sortOrder        Int       @default(0)
+  scheduleId       String?
+  scheduledForDate DateTime? @db.Date
+  deletedAt        DateTime? @db.Timestamptz
+  createdAt        DateTime  @default(now()) @db.Timestamptz
+  updatedAt        DateTime  @updatedAt @db.Timestamptz
+
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent   Task?          @relation("TaskHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children Task[]         @relation("TaskHierarchy")
+  schedule ScheduledTask? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  tags     TaskTag[]
+
+  @@unique([scheduleId, scheduledForDate])
+  @@index([userId])
+  @@index([parentId])
+  @@index([quadrant])
+  @@index([userId, updatedAt])
+}
+
+model TaskTag {
+  taskId String
+  tagId  String
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, tagId])
+  @@index([tagId])
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SCHEDULED TASKS (templates)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Each row is a template that fires on the configured weekdays at the
+// configured local time, generating a Task per fire. Recurrence math runs in
+// the user's TZ (User.timezone). `nextRunAt` is precomputed in UTC so the
+// cron worker can do a fast `WHERE nextRunAt <= now()` lookup.
+//
+// `tagIds` is an array column, not a join — these are templates, FK pressure
+// is low, and dragging a tag onto a schedule isn't a use case.
+
+model ScheduledTask {
+  id        String    @id @default(cuid())
+  userId    String
+  title     String
+  notes     String    @default("")
+  quadrant  Int
+  tagIds    String[]  @default([])
+  weekdays  Int[]     // ISO 1=Mon..7=Sun
+  timeOfDay String    @default("06:00") // "HH:MM" in the user's local TZ
+  active    Boolean   @default(true)
+  lastRunAt DateTime? @db.Timestamptz
+  nextRunAt DateTime  @db.Timestamptz
+  createdAt DateTime  @default(now()) @db.Timestamptz
+  updatedAt DateTime  @updatedAt @db.Timestamptz
+  deletedAt DateTime? @db.Timestamptz
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tasks Task[]
+
+  @@index([userId])
+  @@index([nextRunAt])
+  @@index([userId, updatedAt])
+}

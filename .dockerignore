@@ -1,0 +1,51 @@
+# Dependencies (re-installed inside the image)
+node_modules
+.pnp
+.pnp.*
+
+# Next.js build output (rebuilt inside the image)
+.next
+out
+build
+
+# Local development / editor
+.git
+.gitignore
+.vscode
+.idea
+*.swp
+*.swo
+*.log
+
+# Env files (set via docker-compose env_file on the server)
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Source-control / docs / tests
+README.md
+AGENTS.md
+CLAUDE.md
+.github
+deploy
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# TS build cache
+*.tsbuildinfo
+next-env.d.ts
+
+# Coverage / test reports
+coverage
+playwright-report
+test-results
+
+# Generated SW (rebuilt by serwist on `next build`)
+public/sw.js
+public/sw.js.map
+public/swe-worker-*.js
+public/swe-worker-*.js.map
