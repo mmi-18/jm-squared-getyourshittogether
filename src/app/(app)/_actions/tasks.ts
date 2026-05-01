@@ -168,7 +168,7 @@ async function collectDescendants(rootId: string, userId: string): Promise<strin
 /**
  * Move a task to a new quadrant (cascades the change to all descendants so
  * the subtree stays in one quadrant). Used by drag-and-drop across
- * quadrants in Phase 1B-β.
+ * quadrants.
  */
 export async function moveTaskToQuadrant(id: string, quadrant: Quadrant) {
   const user = await requireUser();
@@ -183,5 +183,47 @@ export async function moveTaskToQuadrant(id: string, quadrant: Quadrant) {
     where: { id: { in: [id, ...ids] } },
     data: { quadrant },
   });
+  revalidate();
+}
+
+/**
+ * Reorder tasks within a quadrant (and optional parent — for subtasks).
+ * Pass the new ordered list of IDs; we rewrite their `sortOrder` to match
+ * the array index. The DnD layer constructs this array from the post-drag
+ * sortable state.
+ *
+ * Validates that every ID belongs to the caller (one query) before any
+ * writes happen.
+ */
+export async function reorderTasks(input: {
+  quadrant: Quadrant;
+  parentId: string | null;
+  orderedIds: string[];
+}) {
+  const user = await requireUser();
+  if (input.orderedIds.length === 0) return;
+
+  const owned = await db.task.findMany({
+    where: { id: { in: input.orderedIds }, userId: user.id, deletedAt: null },
+    select: { id: true },
+  });
+  if (owned.length !== input.orderedIds.length) {
+    throw new Error("Some tasks are not owned by user or were deleted");
+  }
+
+  // One UPDATE per task. With ~20-30 tasks per quadrant this is fine; we
+  // can switch to a CASE-WHEN bulk update if it ever becomes a hotspot.
+  await db.$transaction(
+    input.orderedIds.map((id, idx) =>
+      db.task.update({
+        where: { id },
+        data: {
+          sortOrder: idx,
+          quadrant: input.quadrant,
+          parentId: input.parentId,
+        },
+      }),
+    ),
+  );
   revalidate();
 }
