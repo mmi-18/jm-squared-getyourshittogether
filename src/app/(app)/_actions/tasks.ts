@@ -1,0 +1,187 @@
+"use server";
+
+/**
+ * Server actions for task CRUD.
+ *
+ * Every action enforces ownership via `requireUser()` + `userId` matching.
+ * No RLS — the server is the trust boundary. Mutations soft-delete via
+ * `deletedAt` (the sync engine reads this to propagate deletes across
+ * devices in Phase 1B-γ).
+ */
+
+import { revalidatePath } from "next/cache";
+import { db } from "@/lib/db";
+import { requireUser } from "@/lib/auth";
+import type { Quadrant } from "@/lib/types";
+
+const REVALIDATE = ["/matrix"];
+const revalidate = () => REVALIDATE.forEach((p) => revalidatePath(p));
+
+export async function createTask(input: {
+  title: string;
+  quadrant: Quadrant;
+  notes?: string;
+  parentId?: string | null;
+  tagIds?: string[];
+  deadline?: string | null; // ISO yyyy-mm-dd
+}) {
+  const user = await requireUser();
+  const title = input.title.trim();
+  if (!title) throw new Error("Title is required");
+  if (![1, 2, 3, 4].includes(input.quadrant))
+    throw new Error("Invalid quadrant");
+
+  // Optional parent must belong to the same user.
+  if (input.parentId) {
+    const parent = await db.task.findFirst({
+      where: { id: input.parentId, userId: user.id, deletedAt: null },
+      select: { id: true },
+    });
+    if (!parent) throw new Error("Parent not found");
+  }
+
+  // Place at end of the target list (max sortOrder + 1).
+  const last = await db.task.findFirst({
+    where: {
+      userId: user.id,
+      quadrant: input.quadrant,
+      parentId: input.parentId ?? null,
+      deletedAt: null,
+    },
+    orderBy: { sortOrder: "desc" },
+    select: { sortOrder: true },
+  });
+  const sortOrder = (last?.sortOrder ?? -1) + 1;
+
+  const created = await db.task.create({
+    data: {
+      userId: user.id,
+      title,
+      notes: input.notes ?? "",
+      quadrant: input.quadrant,
+      parentId: input.parentId ?? null,
+      sortOrder,
+      deadline: input.deadline ? new Date(input.deadline) : null,
+      tags: input.tagIds?.length
+        ? { create: input.tagIds.map((tagId) => ({ tagId })) }
+        : undefined,
+    },
+  });
+  revalidate();
+  return created;
+}
+
+export async function updateTask(input: {
+  id: string;
+  title?: string;
+  notes?: string;
+  quadrant?: Quadrant;
+  deadline?: string | null;
+  parentId?: string | null;
+  tagIds?: string[]; // when present, replaces the entire tag set
+}) {
+  const user = await requireUser();
+  const existing = await db.task.findFirst({
+    where: { id: input.id, userId: user.id, deletedAt: null },
+    select: { id: true },
+  });
+  if (!existing) throw new Error("Task not found");
+
+  await db.$transaction(async (tx) => {
+    await tx.task.update({
+      where: { id: input.id },
+      data: {
+        ...(input.title !== undefined ? { title: input.title.trim() } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+        ...(input.quadrant !== undefined ? { quadrant: input.quadrant } : {}),
+        ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
+        ...(input.deadline !== undefined
+          ? { deadline: input.deadline ? new Date(input.deadline) : null }
+          : {}),
+      },
+    });
+    if (input.tagIds !== undefined) {
+      await tx.taskTag.deleteMany({ where: { taskId: input.id } });
+      if (input.tagIds.length) {
+        await tx.taskTag.createMany({
+          data: input.tagIds.map((tagId) => ({ taskId: input.id, tagId })),
+        });
+      }
+    }
+  });
+  revalidate();
+}
+
+/**
+ * Toggle the `completed` flag. Optimized for the common path (single field
+ * write, no transaction) since it's the most-frequent mutation on the board.
+ */
+export async function toggleTaskCompleted(id: string) {
+  const user = await requireUser();
+  const task = await db.task.findFirst({
+    where: { id, userId: user.id, deletedAt: null },
+    select: { completed: true },
+  });
+  if (!task) throw new Error("Task not found");
+  await db.task.update({
+    where: { id },
+    data: { completed: !task.completed },
+  });
+  revalidate();
+}
+
+/**
+ * Soft-delete. Cascades to subtasks via the same call (parent_id FK has
+ * onDelete: Cascade for hard deletes, but soft deletes need explicit
+ * recursion).
+ */
+export async function deleteTask(id: string) {
+  const user = await requireUser();
+  const target = await db.task.findFirst({
+    where: { id, userId: user.id, deletedAt: null },
+    select: { id: true },
+  });
+  if (!target) throw new Error("Task not found");
+
+  // Collect descendants in one pass (max nesting in practice is 2-3 levels;
+  // a recursive CTE would be overkill).
+  const ids = await collectDescendants(id, user.id);
+  await db.task.updateMany({
+    where: { id: { in: [id, ...ids] } },
+    data: { deletedAt: new Date() },
+  });
+  revalidate();
+}
+
+async function collectDescendants(rootId: string, userId: string): Promise<string[]> {
+  const direct = await db.task.findMany({
+    where: { parentId: rootId, userId, deletedAt: null },
+    select: { id: true },
+  });
+  const all = [...direct.map((t) => t.id)];
+  for (const child of direct) {
+    all.push(...(await collectDescendants(child.id, userId)));
+  }
+  return all;
+}
+
+/**
+ * Move a task to a new quadrant (cascades the change to all descendants so
+ * the subtree stays in one quadrant). Used by drag-and-drop across
+ * quadrants in Phase 1B-β.
+ */
+export async function moveTaskToQuadrant(id: string, quadrant: Quadrant) {
+  const user = await requireUser();
+  if (![1, 2, 3, 4].includes(quadrant)) throw new Error("Invalid quadrant");
+  const target = await db.task.findFirst({
+    where: { id, userId: user.id, deletedAt: null },
+    select: { id: true },
+  });
+  if (!target) throw new Error("Task not found");
+  const ids = await collectDescendants(id, user.id);
+  await db.task.updateMany({
+    where: { id: { in: [id, ...ids] } },
+    data: { quadrant },
+  });
+  revalidate();
+}
