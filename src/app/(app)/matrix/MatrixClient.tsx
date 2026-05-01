@@ -32,6 +32,7 @@ import { Header, applyTheme } from "@/components/matrix/Header";
 import { FilterStrip } from "@/components/matrix/FilterStrip";
 import { TagManagerModal } from "@/components/matrix/TagManagerModal";
 import { TaskCard, type TaskWithTagIds } from "@/components/matrix/TaskCard";
+import { EditTaskModal } from "@/components/matrix/EditTaskModal";
 
 export function MatrixClient({
   initialTasks,
@@ -259,6 +260,9 @@ export function MatrixClient({
   // ── Tag manager modal ─────────────────────────────────────────────────
   const [tagsOpen, setTagsOpen] = useState(false);
 
+  // ── Edit task modal ───────────────────────────────────────────────────
+  const [editingTask, setEditingTask] = useState<TaskWithTagIds | null>(null);
+
   // ── Inline-add state, scoped per quadrant ─────────────────────────────
   const [adding, setAdding] = useState<Quadrant | null>(null);
 
@@ -325,6 +329,7 @@ export function MatrixClient({
                   router.refresh();
                 })
               }
+              onEditTask={(t) => setEditingTask(t)}
             />
           ))}
         </div>
@@ -346,6 +351,13 @@ export function MatrixClient({
         open={tagsOpen}
         onClose={() => setTagsOpen(false)}
         tags={initialTags}
+      />
+
+      <EditTaskModal
+        open={editingTask !== null}
+        task={editingTask}
+        tags={initialTags}
+        onClose={() => setEditingTask(null)}
       />
     </div>
   );

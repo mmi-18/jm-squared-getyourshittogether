@@ -1,6 +1,7 @@
 "use client";
 
-import { LogOut, Moon, Sun, Tags as TagsIcon } from "lucide-react";
+import { Download, LogOut, Moon, Sun, Tags as TagsIcon } from "lucide-react";
+import Link from "next/link";
 import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { signOut } from "@/lib/auth-client";
@@ -40,13 +41,22 @@ export function Header({
       </span>
       <div className="flex-1" />
 
+      <Link
+        href="/import"
+        className="border-border hover:bg-muted inline-flex items-center gap-1.5 rounded-md border bg-white px-2.5 py-1 text-xs"
+        aria-label="Import from artifact"
+      >
+        <Download size={13} />
+        <span className="hidden sm:inline">Import</span>
+      </Link>
+
       <button
         onClick={onOpenTags}
         className="border-border hover:bg-muted inline-flex items-center gap-1.5 rounded-md border bg-white px-2.5 py-1 text-xs"
         aria-label="Manage tags"
       >
         <TagsIcon size={13} />
-        Manage tags
+        <span className="hidden sm:inline">Manage tags</span>
       </button>
 
       <button

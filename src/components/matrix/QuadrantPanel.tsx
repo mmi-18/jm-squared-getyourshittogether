@@ -32,6 +32,7 @@ export function QuadrantPanel({
   onSubmitTask,
   onToggleTask,
   onDeleteTask,
+  onEditTask,
 }: {
   quadrant: Quadrant;
   tasks: TaskWithTagIds[];
@@ -49,6 +50,7 @@ export function QuadrantPanel({
   }) => void;
   onToggleTask: (id: string) => void;
   onDeleteTask: (id: string) => void;
+  onEditTask: (task: TaskWithTagIds) => void;
 }) {
   const meta = QUADRANTS[quadrant];
   const { isOver, setNodeRef } = useDroppable({
@@ -120,6 +122,7 @@ export function QuadrantPanel({
               disabled={pending}
               onToggle={() => onToggleTask(task.id)}
               onDelete={() => onDeleteTask(task.id)}
+              onEdit={() => onEditTask(task)}
             />
           ))}
 

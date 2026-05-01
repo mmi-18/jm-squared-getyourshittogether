@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Check, FileText, GripVertical, Trash2 } from "lucide-react";
+import { Check, FileText, GripVertical, Pencil, Trash2 } from "lucide-react";
 import type { Tag, Task } from "@prisma/client";
 import { cn } from "@/lib/utils";
 import {
@@ -32,12 +32,14 @@ export function TaskCard({
   disabled,
   onToggle,
   onDelete,
+  onEdit,
 }: {
   task: TaskWithTagIds;
   tagsById: Map<string, Tag>;
   disabled: boolean;
   onToggle: () => void;
   onDelete: () => void;
+  onEdit?: () => void;
 }) {
   const sortable = useSortable({
     id: task.id,
@@ -126,6 +128,17 @@ export function TaskCard({
         >
           <GripVertical size={12} />
         </span>
+
+        {onEdit && (
+          <button
+            onClick={onEdit}
+            disabled={disabled}
+            className="text-muted-foreground hover:text-foreground hover:bg-muted flex h-6 w-6 items-center justify-center rounded"
+            aria-label="Edit task"
+          >
+            <Pencil size={13} />
+          </button>
+        )}
 
         <button
           onClick={onDelete}
