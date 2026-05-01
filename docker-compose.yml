@@ -1,0 +1,66 @@
+# Production docker-compose for the Hetzner host.
+#
+# Lives at /home/mario/getyourshittogether/docker-compose.yml on the server
+# (NOT used in CI — the GitHub Actions workflow SSHes in and runs
+# `docker compose pull` + `docker compose up -d` against THIS file).
+#
+# Required adjacent files on the server:
+#   - /home/mario/getyourshittogether/.env       DATABASE_URL, DIRECT_URL,
+#                                                BETTER_AUTH_*, NEXT_PUBLIC_SITE_URL,
+#                                                CRON_SECRET (gitignored;
+#                                                placed manually during bring-up)
+#   - /home/mario/getyourshittogether/uploads/   bind-mount target —
+#                                                created at bring-up with
+#                                                `mkdir -p`. Container runs
+#                                                as the `node` user (uid 1000)
+#                                                which matches the host's
+#                                                `mario`, so no chown needed.
+#
+# Traefik integration (the running Traefik container is configured with):
+#   - Network:        web   (external, shared with this service)
+#   - Entrypoints:    web (:80) and websecure (:443)
+#   - HTTP→HTTPS:     handled globally by Traefik
+#                     (--entrypoints.web.http.redirections.entrypoint.to=websecure)
+#                     so no per-service redirect middleware needed here
+#   - Cert resolver:  le (Let's Encrypt, HTTP-01 challenge on the `web`
+#                     entrypoint, storage at /acme.json)
+#
+# DNS sanity:
+#   getyourshittogether.jm-squared.com  →  91.99.239.81 (A record)
+#
+# First-time bring-up (one-time):
+#   1. ssh mario@91.99.239.81
+#   2. mkdir -p /home/mario/getyourshittogether/uploads
+#   3. cp this file → /home/mario/getyourshittogether/docker-compose.yml
+#   4. cp .env (with real secrets) → /home/mario/getyourshittogether/.env  (chmod 600)
+#   5. The deploy workflow logs in to GHCR with its own token — no manual
+#      `docker login ghcr.io` is required for bring-up.
+
+services:
+  getyourshittogether:
+    image: ghcr.io/mmi-18/jm-squared-getyourshittogether:latest
+    container_name: getyourshittogether
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./uploads:/app/uploads
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router — Let's Encrypt cert via the resolver named `le`.
+      - "traefik.http.routers.gyst.rule=Host(`getyourshittogether.jm-squared.com`)"
+      - "traefik.http.routers.gyst.entrypoints=websecure"
+      - "traefik.http.routers.gyst.tls=true"
+      - "traefik.http.routers.gyst.tls.certresolver=le"
+      - "traefik.http.services.gyst.loadbalancer.server.port=3000"
+
+      # Tell Traefik which network to talk to the service on (matters when
+      # the container is also attached to a default bridge network).
+      - "traefik.docker.network=web"
+
+networks:
+  web:
+    external: true

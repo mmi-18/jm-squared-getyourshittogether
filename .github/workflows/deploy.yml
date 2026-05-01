@@ -1,0 +1,86 @@
+name: Deploy
+
+# Build the Docker image, push it to GHCR, then SSH into the Hetzner box
+# and pull/restart the container. Triggered on every push to main —
+# remember the project rule: never push without explicit OK from Mario.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ════════════════════════════════════════════════════════════════════
+  # 1. Build + push the Docker image to GitHub Container Registry
+  # ════════════════════════════════════════════════════════════════════
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+
+      - name: Build + push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NEXT_PUBLIC_SITE_URL=${{ vars.NEXT_PUBLIC_SITE_URL }}
+
+  # ════════════════════════════════════════════════════════════════════
+  # 2. SSH into Hetzner, pull the new image, swap the container in
+  # ════════════════════════════════════════════════════════════════════
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy on Hetzner
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: ${{ secrets.HETZNER_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -e
+            cd /home/mario/getyourshittogether
+
+            # Re-login to GHCR with this run's short-lived token. The
+            # workflow's GITHUB_TOKEN is scoped to read:packages on the
+            # repo, which is enough to pull. The login persists in
+            # ~/.docker/config.json for subsequent commands in this script.
+            echo ${{ secrets.GITHUB_TOKEN }} \
+              | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            docker compose pull getyourshittogether
+            docker compose up -d getyourshittogether
+
+            # Reclaim disk from the previous image versions
+            docker image prune -f
