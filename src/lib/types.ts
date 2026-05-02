@@ -47,6 +47,32 @@ export type TaskWithRelations = PrismaTask & {
 };
 
 /**
+ * Time-based deadline filter presets. Mutually exclusive — pick one.
+ *
+ *   any            no filter (default)
+ *   has_deadline   any task that has a deadline
+ *   no_deadline    only tasks without a deadline
+ *   overdue        deadline strictly before today
+ *   today          deadline === today
+ *   next_3_days    today + next 2 days (today through today+2)
+ *   next_7_days    today through today+6
+ *   next_14_days   today through today+13
+ *   this_month     deadline falls in the current calendar month
+ *
+ * Combine with the (existing) `showCompleted` toggle and tag chips.
+ */
+export type DeadlineFilter =
+  | "any"
+  | "has_deadline"
+  | "no_deadline"
+  | "overdue"
+  | "today"
+  | "next_3_days"
+  | "next_7_days"
+  | "next_14_days"
+  | "this_month";
+
+/**
  * Persisted filter state. Stored as `User.defaultFilters` (Json) so it
  * roams across devices.
  */
@@ -54,12 +80,12 @@ export type FilterState = {
   selectedTagIds: string[];
   expandedTagIds: string[];
   showCompleted: boolean;
-  onlyWithDeadline: boolean;
+  deadlineFilter: DeadlineFilter;
 };
 
 export const DEFAULT_FILTER_STATE: FilterState = {
   selectedTagIds: [],
   expandedTagIds: [],
   showCompleted: true,
-  onlyWithDeadline: false,
+  deadlineFilter: "any",
 };

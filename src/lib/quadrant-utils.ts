@@ -84,6 +84,56 @@ export function hexToRgba(hex: string, alpha: number): string {
 }
 
 /**
+ * Apply a `DeadlineFilter` preset. `null` deadlines pass only the "any"
+ * (no filter) and "no_deadline" presets. Day-comparison: floor both sides
+ * to local midnight so "today" matches a same-day deadline regardless of
+ * the time component.
+ */
+import type { DeadlineFilter } from "@/lib/types";
+
+export function passesDeadlineFilter(
+  deadline: Date | string | null,
+  filter: DeadlineFilter,
+): boolean {
+  if (filter === "any") return true;
+  if (filter === "no_deadline") return deadline === null;
+  if (deadline === null) return false; // all remaining filters require a deadline
+  if (filter === "has_deadline") return true;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const dl = typeof deadline === "string" ? new Date(deadline) : new Date(deadline);
+  dl.setHours(0, 0, 0, 0);
+  const diff = Math.round((dl.getTime() - today.getTime()) / 86400000);
+
+  switch (filter) {
+    case "overdue":      return diff < 0;
+    case "today":        return diff === 0;
+    case "next_3_days":  return diff >= 0 && diff <= 2;
+    case "next_7_days":  return diff >= 0 && diff <= 6;
+    case "next_14_days": return diff >= 0 && diff <= 13;
+    case "this_month":
+      return (
+        dl.getFullYear() === today.getFullYear() &&
+        dl.getMonth() === today.getMonth()
+      );
+  }
+  return true;
+}
+
+export const DEADLINE_FILTER_LABELS: Record<DeadlineFilter, string> = {
+  any: "Any time",
+  has_deadline: "Has deadline",
+  no_deadline: "No deadline",
+  overdue: "Overdue",
+  today: "Today",
+  next_3_days: "Next 3 days",
+  next_7_days: "Next 7 days",
+  next_14_days: "Next 14 days",
+  this_month: "This month",
+};
+
+/**
  * Format a date for the deadline pill on a task card. Mirrors the artifact:
  * relative-when-near, "MMM d" otherwise. Returns the string + a tone hint.
  */

@@ -62,6 +62,22 @@ export default async function MatrixPage() {
 function parseFilterState(raw: unknown): FilterState {
   if (!raw || typeof raw !== "object") return DEFAULT_FILTER_STATE;
   const r = raw as Record<string, unknown>;
+
+  // Migrate the old `onlyWithDeadline: boolean` shape (pre-time-filter)
+  // to the new `deadlineFilter: DeadlineFilter` enum. true → "has_deadline".
+  const validDeadlineFilters = [
+    "any", "has_deadline", "no_deadline", "overdue", "today",
+    "next_3_days", "next_7_days", "next_14_days", "this_month",
+  ] as const;
+  let deadlineFilter: FilterState["deadlineFilter"];
+  if (typeof r.deadlineFilter === "string" && (validDeadlineFilters as readonly string[]).includes(r.deadlineFilter)) {
+    deadlineFilter = r.deadlineFilter as FilterState["deadlineFilter"];
+  } else if (r.onlyWithDeadline === true) {
+    deadlineFilter = "has_deadline";
+  } else {
+    deadlineFilter = "any";
+  }
+
   return {
     selectedTagIds: Array.isArray(r.selectedTagIds)
       ? (r.selectedTagIds as unknown[]).filter((x): x is string => typeof x === "string")
@@ -71,9 +87,6 @@ function parseFilterState(raw: unknown): FilterState {
       : DEFAULT_FILTER_STATE.expandedTagIds,
     showCompleted:
       typeof r.showCompleted === "boolean" ? r.showCompleted : DEFAULT_FILTER_STATE.showCompleted,
-    onlyWithDeadline:
-      typeof r.onlyWithDeadline === "boolean"
-        ? r.onlyWithDeadline
-        : DEFAULT_FILTER_STATE.onlyWithDeadline,
+    deadlineFilter,
   };
 }

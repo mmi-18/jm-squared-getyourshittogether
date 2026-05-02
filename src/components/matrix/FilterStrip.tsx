@@ -1,12 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronRight, X } from "lucide-react";
+import { CalendarRange, ChevronRight, X } from "lucide-react";
 import type { Tag } from "@prisma/client";
 import { cn } from "@/lib/utils";
-import { effectiveTagColor } from "@/lib/quadrant-utils";
+import { DEADLINE_FILTER_LABELS, effectiveTagColor } from "@/lib/quadrant-utils";
 import { buildTagTree, type TagNode } from "@/lib/tag-utils";
-import type { FilterState } from "@/lib/types";
+import type { DeadlineFilter, FilterState } from "@/lib/types";
 
 /**
  * Filter strip — tag chips with hierarchical expand, "show completed" and
@@ -57,7 +57,7 @@ export function FilterStrip({
 
   const hasFilters =
     filters.selectedTagIds.length > 0 ||
-    filters.onlyWithDeadline ||
+    filters.deadlineFilter !== "any" ||
     !filters.showCompleted;
 
   return (
@@ -75,13 +75,13 @@ export function FilterStrip({
         />
       ))}
 
-      <Toggle
-        on={filters.onlyWithDeadline}
-        onClick={() =>
-          onChange({ ...filters, onlyWithDeadline: !filters.onlyWithDeadline })
+      <DeadlineFilterPill
+        value={filters.deadlineFilter}
+        onChange={(deadlineFilter) =>
+          onChange({ ...filters, deadlineFilter })
         }
-        label="Only with deadline"
       />
+
       <Toggle
         on={filters.showCompleted}
         onClick={() =>
@@ -98,7 +98,7 @@ export function FilterStrip({
               selectedTagIds: [],
               expandedTagIds: filters.expandedTagIds,
               showCompleted: true,
-              onlyWithDeadline: false,
+              deadlineFilter: "any",
             })
           }
           className="border-border hover:bg-muted inline-flex items-center gap-1 rounded-full border bg-white px-2 py-0.5 text-[11px]"
@@ -108,6 +108,59 @@ export function FilterStrip({
         </button>
       )}
     </div>
+  );
+}
+
+/**
+ * The deadline-filter dropdown. Renders as a pill (matches the rest of the
+ * filter strip aesthetic). Inactive when value="any"; highlighted when
+ * any other preset is selected.
+ *
+ * Uses a native <select> wrapped in a styled <span> so we get the OS
+ * picker on mobile (better tap experience than a custom popover) without
+ * sacrificing visual consistency on desktop.
+ */
+function DeadlineFilterPill({
+  value,
+  onChange,
+}: {
+  value: DeadlineFilter;
+  onChange: (next: DeadlineFilter) => void;
+}) {
+  const active = value !== "any";
+  const options: DeadlineFilter[] = [
+    "any",
+    "overdue",
+    "today",
+    "next_3_days",
+    "next_7_days",
+    "next_14_days",
+    "this_month",
+    "has_deadline",
+    "no_deadline",
+  ];
+  return (
+    <label
+      className={cn(
+        "border-border hover:bg-muted relative inline-flex cursor-pointer items-center gap-1.5 rounded-full border bg-white py-0.5 pl-2 pr-2 text-[11.5px] transition-colors",
+        active && "border-foreground bg-foreground/10",
+      )}
+    >
+      <CalendarRange size={11} />
+      <span>{DEADLINE_FILTER_LABELS[value]}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as DeadlineFilter)}
+        aria-label="Deadline filter"
+        className="absolute inset-0 cursor-pointer opacity-0"
+      >
+        {options.map((opt) => (
+          <option key={opt} value={opt}>
+            {DEADLINE_FILTER_LABELS[opt]}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

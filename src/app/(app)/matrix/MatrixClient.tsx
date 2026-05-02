@@ -20,6 +20,7 @@ import type { Tag } from "@prisma/client";
 import { Theme } from "@prisma/client";
 import { type FilterState, type Quadrant } from "@/lib/types";
 import { descendantTagIds } from "@/lib/tag-utils";
+import { passesDeadlineFilter } from "@/lib/quadrant-utils";
 import {
   createTask,
   deleteTask,
@@ -106,7 +107,7 @@ export function MatrixClient({
     const passes = (t: TaskWithTagIds) => {
       if (t.parentId) return false; // top-level only for now
       if (!filters.showCompleted && t.completed) return false;
-      if (filters.onlyWithDeadline && !t.deadline) return false;
+      if (!passesDeadlineFilter(t.deadline, filters.deadlineFilter)) return false;
       if (filters.selectedTagIds.length === 0) return true;
       return t.tagIds.some((id) => matchSet.has(id));
     };
