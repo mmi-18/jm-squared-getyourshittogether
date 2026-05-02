@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { CalendarRange, ChevronRight, X } from "lucide-react";
+import { CalendarRange, Check, ChevronRight, X } from "lucide-react";
 import type { Tag } from "@prisma/client";
 import { cn } from "@/lib/utils";
 import { DEADLINE_FILTER_LABELS, effectiveTagColor } from "@/lib/quadrant-utils";
@@ -244,6 +244,12 @@ function TagChipWithSubs({
   );
 }
 
+/**
+ * Boolean filter pill. Solid emerald when on (with a check), outlined
+ * white when off — matches the DeadlineFilterPill aesthetic and reads
+ * as on/off at a glance, unlike the previous track-and-dot switch which
+ * looked broken next to the longer text label.
+ */
 function Toggle({
   on,
   onClick,
@@ -257,25 +263,15 @@ function Toggle({
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={on}
       className={cn(
-        "border-border hover:bg-muted inline-flex items-center gap-2 rounded-full border bg-white px-2.5 py-0.5 text-[11.5px]",
-        on && "border-foreground bg-foreground/10",
+        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11.5px] transition-colors",
+        on
+          ? "border-emerald-500 bg-emerald-500 text-white hover:bg-emerald-600"
+          : "border-border bg-white text-foreground hover:bg-muted",
       )}
     >
-      <span
-        aria-hidden
-        className={cn(
-          "relative h-3 w-6 flex-shrink-0 rounded-full transition-colors",
-          on ? "bg-emerald-500" : "bg-border-strong",
-        )}
-      >
-        <span
-          className={cn(
-            "absolute top-0.5 h-2 w-2 rounded-full bg-white shadow transition-transform",
-            on ? "translate-x-3" : "translate-x-0.5",
-          )}
-        />
-      </span>
+      {on && <Check size={12} strokeWidth={3} />}
       {label}
     </button>
   );

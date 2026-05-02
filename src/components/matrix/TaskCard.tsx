@@ -77,7 +77,11 @@ export function TaskCard({
       style={style}
       className={cn(
         "border-border bg-surface group relative flex flex-col gap-1 overflow-hidden rounded-[6px] border py-2 pl-4 pr-2 shadow-sm",
-        task.completed && "opacity-55",
+        // Completed visual: subtler bg shift + strikethrough on title
+        // (handled below). The previous `opacity-55` faded the whole
+        // card including the colored bar, making completed tasks hard
+        // to scan when "Show completed" is on.
+        task.completed && "bg-muted/40",
       )}
     >
       <span
@@ -102,7 +106,7 @@ export function TaskCard({
           {...listeners}
           className={cn(
             "min-w-0 flex-1 cursor-grab truncate text-[13.5px] active:cursor-grabbing",
-            task.completed && "line-through",
+            task.completed && "text-muted-foreground line-through",
           )}
         >
           {task.title}
