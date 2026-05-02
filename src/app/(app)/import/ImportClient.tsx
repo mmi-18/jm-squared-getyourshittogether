@@ -74,7 +74,7 @@ export function ImportClient() {
     <div className="flex flex-col gap-4">
       {/* ─── File picker / drop zone ───────────────────────────────────── */}
       <label
-        className="border-border-strong hover:bg-muted relative flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed bg-white py-10 text-center transition-colors"
+        className="border-border-strong hover:bg-muted relative flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed bg-surface py-10 text-center transition-colors"
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault();
@@ -148,7 +148,7 @@ export function ImportClient() {
           }}
           rows={10}
           placeholder='{"tasks":[…],"tags":[…]}'
-          className="border-border focus:border-foreground mt-2 w-full rounded-md border bg-white p-3 font-mono text-xs outline-none"
+          className="border-border focus:border-foreground mt-2 w-full rounded-md border bg-surface p-3 font-mono text-xs outline-none"
         />
       </details>
 

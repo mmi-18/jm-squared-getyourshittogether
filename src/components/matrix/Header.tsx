@@ -43,7 +43,7 @@ export function Header({
 
       <Link
         href="/import"
-        className="border-border hover:bg-muted inline-flex items-center gap-1.5 rounded-md border bg-white px-2.5 py-1 text-xs"
+        className="border-border hover:bg-muted inline-flex items-center gap-1.5 rounded-md border bg-surface px-2.5 py-1 text-xs"
         aria-label="Import from artifact"
       >
         <Download size={13} />
@@ -52,7 +52,7 @@ export function Header({
 
       <button
         onClick={onOpenTags}
-        className="border-border hover:bg-muted inline-flex items-center gap-1.5 rounded-md border bg-white px-2.5 py-1 text-xs"
+        className="border-border hover:bg-muted inline-flex items-center gap-1.5 rounded-md border bg-surface px-2.5 py-1 text-xs"
         aria-label="Manage tags"
       >
         <TagsIcon size={13} />
@@ -62,7 +62,7 @@ export function Header({
       <button
         onClick={cycleTheme}
         disabled={pending}
-        className="border-border hover:bg-muted inline-flex items-center gap-1.5 rounded-md border bg-white px-2.5 py-1 text-xs"
+        className="border-border hover:bg-muted inline-flex items-center gap-1.5 rounded-md border bg-surface px-2.5 py-1 text-xs"
         aria-label={`Theme: ${theme} (click to cycle)`}
         title={`Theme: ${theme}`}
       >
@@ -79,7 +79,7 @@ export function Header({
           })
         }
         disabled={pending}
-        className="border-border text-muted-foreground hover:bg-muted inline-flex items-center gap-1.5 rounded-md border bg-white px-2.5 py-1 text-xs"
+        className="border-border text-muted-foreground hover:bg-muted inline-flex items-center gap-1.5 rounded-md border bg-surface px-2.5 py-1 text-xs"
         aria-label="Sign out"
       >
         <LogOut size={13} />

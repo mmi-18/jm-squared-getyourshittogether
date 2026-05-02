@@ -111,7 +111,7 @@ export function InlineTaskForm({
                 // Otherwise plain-Enter falls through to newline (browser default)
               }
             }}
-            className="border-border focus:border-foreground resize-y rounded-md border bg-white px-2 py-1.5 text-[13px] outline-none"
+            className="border-border focus:border-foreground resize-y rounded-md border bg-surface px-2 py-1.5 text-[13px] outline-none"
           />
           <div className="flex flex-wrap items-center gap-2">
             <div className="min-w-[160px] flex-1">

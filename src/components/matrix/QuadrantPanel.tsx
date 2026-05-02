@@ -109,7 +109,7 @@ export function QuadrantPanel({
           className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-2 pb-2.5 pt-1.5"
         >
           {tasks.length === 0 && !adding && (
-            <p className="text-subtle border-border-strong mt-1 rounded-[10px] border border-dashed bg-white py-4 text-center text-[12px] italic">
+            <p className="text-subtle border-border-strong mt-1 rounded-[10px] border border-dashed bg-surface py-4 text-center text-[12px] italic">
               Nothing here yet.
             </p>
           )}

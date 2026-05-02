@@ -53,7 +53,7 @@ export function SignupForm() {
           autoComplete="name"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="border-border focus:border-foreground rounded-md border bg-white px-3 py-2 text-sm outline-none"
+          className="border-border focus:border-foreground rounded-md border bg-surface px-3 py-2 text-sm outline-none"
         />
       </label>
 
@@ -65,7 +65,7 @@ export function SignupForm() {
           autoComplete="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="border-border focus:border-foreground rounded-md border bg-white px-3 py-2 text-sm outline-none"
+          className="border-border focus:border-foreground rounded-md border bg-surface px-3 py-2 text-sm outline-none"
         />
       </label>
 
@@ -78,7 +78,7 @@ export function SignupForm() {
           autoComplete="new-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="border-border focus:border-foreground rounded-md border bg-white px-3 py-2 text-sm outline-none"
+          className="border-border focus:border-foreground rounded-md border bg-surface px-3 py-2 text-sm outline-none"
         />
       </label>
 

@@ -115,7 +115,7 @@ export function TagManagerModal({
                         refresh();
                       });
                     }}
-                    className="border-border focus:border-foreground flex-1 rounded border bg-white px-2 py-1 text-[12.5px] outline-none"
+                    className="border-border focus:border-foreground flex-1 rounded border bg-surface px-2 py-1 text-[12.5px] outline-none"
                   />
 
                   <select
@@ -200,7 +200,7 @@ export function TagManagerModal({
                   refresh();
                 });
               }}
-              className="border-border hover:bg-muted inline-flex items-center gap-1.5 rounded-md border bg-white px-2.5 py-1.5 text-[12.5px]"
+              className="border-border hover:bg-muted inline-flex items-center gap-1.5 rounded-md border bg-surface px-2.5 py-1.5 text-[12.5px]"
             >
               <Plus size={13} />
               Add tag

@@ -2,9 +2,17 @@
 @import "tw-animate-css";
 
 /*
- * Design tokens — sourced from the spec (section 6). Light + dark variants;
- * the .dark class swaps the lot. Tailwind 4's @theme inline lets us expose
- * them as utility classes (`bg-background`, `text-foreground`, …).
+ * Tailwind 4 dark variant: enables `dark:bg-x` utilities by mapping them
+ * to the `.dark` class on <html> (set by applyTheme() on the matrix page).
+ * Without this, only my CSS-var-backed tokens swap on theme change —
+ * raw utilities like `bg-white` stay bright white in dark mode.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Design tokens. The :root block is the light theme; `.dark` (set on
+ * <html>) overrides the same custom properties. All Tailwind utilities
+ * referencing these via @theme inline auto-swap on theme change.
  */
 
 @theme inline {
@@ -28,41 +36,42 @@
 }
 
 :root {
-  /* Light theme */
-  --bg: #fafafa;
+  /* Light — warm zinc neutrals, vibrant violet accent. */
+  --bg: #fafaf9;
   --surface: #ffffff;
-  --text: #0f172a;
-  --text-muted: #64748b;
-  --text-subtle: #94a3b8;
-  --border: #e2e8f0;
-  --border-strong: #cbd5e1;
-  --hover: #f1f5f9;
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow-md: 0 4px 14px rgba(15, 23, 42, 0.10);
-  --q1-accent: #dc2626;
-  --q2-accent: #2563eb;
-  --q3-accent: #d97706;
-  --q4-accent: #64748b;
-  --accent: #6366f1;
+  --text: #18181b;
+  --text-muted: #52525b;
+  --text-subtle: #a1a1aa;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --hover: #f4f4f5;
+  --shadow-sm: 0 1px 2px rgba(24, 24, 27, 0.04);
+  --shadow-md: 0 4px 14px rgba(24, 24, 27, 0.10);
+  /* Quadrant accents — pop more than the previous slate/amber set. */
+  --q1-accent: #ef4444;  /* red-500     — urgent + important */
+  --q2-accent: #6366f1;  /* indigo-500  — strategic / important */
+  --q3-accent: #f97316;  /* orange-500  — urgent / delegate */
+  --q4-accent: #a78bfa;  /* violet-400  — eliminate (was gray; still distinct from accent) */
+  --accent:    #8b5cf6;  /* violet-500  — app accent */
 }
 
 .dark {
-  /* Dark theme — same hues, slightly desaturated quadrant accents */
-  --bg: #0b1220;
-  --surface: #131c2e;
-  --text: #e5e7eb;
-  --text-muted: #94a3b8;
-  --text-subtle: #64748b;
-  --border: #1f2a44;
-  --border-strong: #2c3a5b;
-  --hover: #1a2540;
+  /* Dark — purple-tinted instead of cool navy; vibrant softened accents. */
+  --bg: #0c0a14;
+  --surface: #18162b;
+  --text: #e4e4e7;
+  --text-muted: #a1a1aa;
+  --text-subtle: #71717a;
+  --border: #27243d;
+  --border-strong: #38324f;
+  --hover: #1f1c33;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.5);
-  --q1-accent: #ef4444;
-  --q2-accent: #3b82f6;
-  --q3-accent: #f59e0b;
-  --q4-accent: #94a3b8;
-  --accent: #818cf8;
+  --q1-accent: #f87171;  /* red-400 — lighter so it pops on dark bg */
+  --q2-accent: #818cf8;  /* indigo-400 */
+  --q3-accent: #fb923c;  /* orange-400 */
+  --q4-accent: #c4b5fd;  /* violet-300 */
+  --accent:    #a78bfa;  /* violet-400 */
 }
 
 * { box-sizing: border-box; }

@@ -91,7 +91,7 @@ export function DatePicker({
         type="button"
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "border-border hover:bg-muted inline-flex w-full items-center gap-2 rounded-md border bg-white px-2.5 py-1.5 text-left text-[12.5px]",
+          "border-border hover:bg-muted inline-flex w-full items-center gap-2 rounded-md border bg-surface px-2.5 py-1.5 text-left text-[12.5px]",
           !value && "text-muted-foreground",
         )}
       >

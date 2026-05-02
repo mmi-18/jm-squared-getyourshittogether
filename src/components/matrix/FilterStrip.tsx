@@ -9,14 +9,23 @@ import { buildTagTree, type TagNode } from "@/lib/tag-utils";
 import type { DeadlineFilter, FilterState } from "@/lib/types";
 
 /**
- * Filter strip — tag chips with hierarchical expand, "show completed" and
- * "only with deadline" toggles, "clear filters" affordance.
+ * Filter strip — tag chips with hierarchical expand, time filter, and
+ * boolean toggles. Layout:
  *
- * `selectedTagIds` is *positive* selection: tasks with at least one of these
- * tags pass. (Note: the artifact's filter is "filteredOut" — tags get
- * struck-through when *deselected*. We use positive semantics: empty
- * selection means "show all", non-empty means "show only tasks tagged
- * with at least one of these".)
+ *   ┌─────────────────────────────────────────────────────────────┐
+ *   │ Voltfang ▼   ITBA ▶   Side Projects   Personal   📅Today     │
+ *   │   Voltfang ▸ Minimum  Sonstige                                │
+ *   └─────────────────────────────────────────────────────────────┘
+ *
+ * Main row: only top-level chips (with ▶ chevron when they have
+ * children). Expanded sub-tags render in their OWN row below the main
+ * one, prefixed with the parent name. This keeps the main row from
+ * shifting other chips around when something gets expanded — the bug
+ * the previous nested-column layout had.
+ *
+ * `selectedTagIds` is positive selection: empty = show all tasks;
+ * non-empty = show only tasks with at least one of those tags. Filtering
+ * by a parent matches any descendant.
  */
 export function FilterStrip({
   tags,
@@ -60,111 +69,106 @@ export function FilterStrip({
     filters.deadlineFilter !== "any" ||
     !filters.showCompleted;
 
+  // Flatten the tree into the list of "expanded sections" — one per
+  // expanded node that has children. Depth-first so a sub-tag's substrip
+  // (if also expanded) appears below its parent's substrip.
+  const expandedSections = useMemo(() => {
+    const out: TagNode[] = [];
+    const walk = (nodes: TagNode[]) => {
+      for (const n of nodes) {
+        if (expanded.has(n.id) && n.children.length > 0) {
+          out.push(n);
+          walk(n.children);
+        }
+      }
+    };
+    walk(tree);
+    return out;
+  }, [tree, expanded]);
+
   return (
-    <div className="flex flex-wrap items-start gap-1.5">
-      {tree.map((node) => (
-        <TagChipWithSubs
-          key={node.id}
-          node={node}
-          tagsById={tagsById}
-          selected={filters.selectedTagIds}
-          expanded={expanded}
-          counts={taskCounts}
-          onToggleSel={toggleSel}
-          onToggleExpand={toggleExpand}
+    <div className="flex flex-col gap-1.5">
+      {/* ── Main row ─────────────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {tree.map((node) => (
+          <TagChip
+            key={node.id}
+            node={node}
+            tagsById={tagsById}
+            selected={filters.selectedTagIds}
+            expanded={expanded}
+            counts={taskCounts}
+            onToggleSel={toggleSel}
+            onToggleExpand={toggleExpand}
+          />
+        ))}
+
+        <DeadlineFilterPill
+          value={filters.deadlineFilter}
+          onChange={(deadlineFilter) => onChange({ ...filters, deadlineFilter })}
         />
-      ))}
 
-      <DeadlineFilterPill
-        value={filters.deadlineFilter}
-        onChange={(deadlineFilter) =>
-          onChange({ ...filters, deadlineFilter })
-        }
-      />
+        <Toggle
+          on={filters.showCompleted}
+          onClick={() => onChange({ ...filters, showCompleted: !filters.showCompleted })}
+          label="Show completed"
+        />
 
-      <Toggle
-        on={filters.showCompleted}
-        onClick={() =>
-          onChange({ ...filters, showCompleted: !filters.showCompleted })
-        }
-        label="Show completed"
-      />
+        {hasFilters && (
+          <button
+            type="button"
+            onClick={() =>
+              onChange({
+                selectedTagIds: [],
+                expandedTagIds: filters.expandedTagIds,
+                showCompleted: true,
+                deadlineFilter: "any",
+              })
+            }
+            className="border-border bg-surface hover:bg-muted inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]"
+          >
+            <X size={11} />
+            Clear filters
+          </button>
+        )}
+      </div>
 
-      {hasFilters && (
-        <button
-          type="button"
-          onClick={() =>
-            onChange({
-              selectedTagIds: [],
-              expandedTagIds: filters.expandedTagIds,
-              showCompleted: true,
-              deadlineFilter: "any",
-            })
-          }
-          className="border-border hover:bg-muted inline-flex items-center gap-1 rounded-full border bg-white px-2 py-0.5 text-[11px]"
+      {/* ── Sub-strips below — one per expanded parent ────────────────── */}
+      {expandedSections.map((node) => (
+        <div
+          key={node.id}
+          className="border-border-strong ml-2 flex flex-wrap items-center gap-1.5 border-l-2 pl-3"
         >
-          <X size={11} />
-          Clear filters
-        </button>
-      )}
+          <span className="text-muted-foreground inline-flex items-center gap-1 text-[11px] italic">
+            {node.name}
+            <ChevronRight size={11} />
+          </span>
+          {node.children.map((child) => (
+            <TagChip
+              key={child.id}
+              node={child}
+              tagsById={tagsById}
+              selected={filters.selectedTagIds}
+              expanded={expanded}
+              counts={taskCounts}
+              onToggleSel={toggleSel}
+              onToggleExpand={toggleExpand}
+            />
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
 
-/**
- * The deadline-filter dropdown. Renders as a pill (matches the rest of the
- * filter strip aesthetic). Inactive when value="any"; highlighted when
- * any other preset is selected.
- *
- * Uses a native <select> wrapped in a styled <span> so we get the OS
- * picker on mobile (better tap experience than a custom popover) without
- * sacrificing visual consistency on desktop.
- */
-function DeadlineFilterPill({
-  value,
-  onChange,
-}: {
-  value: DeadlineFilter;
-  onChange: (next: DeadlineFilter) => void;
-}) {
-  const active = value !== "any";
-  const options: DeadlineFilter[] = [
-    "any",
-    "overdue",
-    "today",
-    "next_3_days",
-    "next_7_days",
-    "next_14_days",
-    "this_month",
-    "has_deadline",
-    "no_deadline",
-  ];
-  return (
-    <label
-      className={cn(
-        "border-border hover:bg-muted relative inline-flex cursor-pointer items-center gap-1.5 rounded-full border bg-white py-0.5 pl-2 pr-2 text-[11.5px] transition-colors",
-        active && "border-foreground bg-foreground/10",
-      )}
-    >
-      <CalendarRange size={11} />
-      <span>{DEADLINE_FILTER_LABELS[value]}</span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value as DeadlineFilter)}
-        aria-label="Deadline filter"
-        className="absolute inset-0 cursor-pointer opacity-0"
-      >
-        {options.map((opt) => (
-          <option key={opt} value={opt}>
-            {DEADLINE_FILTER_LABELS[opt]}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
+// ════════════════════════════════════════════════════════════════════════════
 
-function TagChipWithSubs({
+/**
+ * One tag chip. Renders the colored dot + name + count, plus an optional
+ * chevron-toggle when it has children. The chevron rotates 90° when
+ * expanded and cues the substrip below.
+ */
+function TagChip({
   node,
   tagsById,
   selected,
@@ -187,66 +191,96 @@ function TagChipWithSubs({
   const isExpanded = expanded.has(node.id);
 
   return (
-    <div className="flex flex-col items-start gap-1">
-      <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        onClick={() => onToggleSel(node.id)}
+        aria-pressed={isSelected}
+        className={cn(
+          "border-border bg-surface hover:bg-muted inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[12px] transition-colors",
+          isSelected && "border-foreground bg-foreground/10",
+        )}
+      >
+        <span
+          className="h-2 w-2 flex-shrink-0 rounded-full ring-1 ring-black/10"
+          style={{ background: color }}
+        />
+        {node.name}
+        <span className="bg-muted text-muted-foreground rounded-full px-1.5 text-[10px]">
+          {counts.get(node.id) ?? 0}
+        </span>
+      </button>
+      {hasChildren && (
         <button
           type="button"
-          onClick={() => onToggleSel(node.id)}
+          onClick={() => onToggleExpand(node.id)}
+          aria-label={isExpanded ? "Collapse" : "Expand"}
+          aria-expanded={isExpanded}
           className={cn(
-            "border-border hover:bg-muted inline-flex items-center gap-1.5 rounded-full border bg-white px-2 py-0.5 text-[12px] transition-colors",
-            isSelected && "border-foreground bg-foreground/10",
+            "text-muted-foreground hover:bg-muted hover:text-foreground inline-flex h-5 w-5 items-center justify-center rounded transition-transform",
+            isExpanded && "rotate-90",
           )}
         >
-          <span
-            className="h-2 w-2 flex-shrink-0 rounded-full ring-1 ring-black/10"
-            style={{ background: color }}
-          />
-          {node.name}
-          <span className="bg-muted text-muted-foreground rounded-full px-1.5 text-[10px]">
-            {counts.get(node.id) ?? 0}
-          </span>
+          <ChevronRight size={11} />
         </button>
-        {hasChildren && (
-          <button
-            type="button"
-            onClick={() => onToggleExpand(node.id)}
-            aria-label={isExpanded ? "Collapse" : "Expand"}
-            className={cn(
-              "text-muted-foreground hover:bg-muted hover:text-foreground inline-flex h-5 w-5 items-center justify-center rounded transition-transform",
-              isExpanded && "rotate-90",
-            )}
-          >
-            <ChevronRight size={11} />
-          </button>
-        )}
-      </div>
-
-      {isExpanded && hasChildren && (
-        <div className="border-border-strong ml-2.5 flex flex-wrap items-start gap-1 border-l-2 pl-2 pt-1">
-          {node.children.map((child) => (
-            <TagChipWithSubs
-              key={child.id}
-              node={child}
-              tagsById={tagsById}
-              selected={selected}
-              expanded={expanded}
-              counts={counts}
-              onToggleSel={onToggleSel}
-              onToggleExpand={onToggleExpand}
-            />
-          ))}
-        </div>
       )}
     </div>
   );
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+
+function DeadlineFilterPill({
+  value,
+  onChange,
+}: {
+  value: DeadlineFilter;
+  onChange: (next: DeadlineFilter) => void;
+}) {
+  const active = value !== "any";
+  const options: DeadlineFilter[] = [
+    "any",
+    "overdue",
+    "today",
+    "next_3_days",
+    "next_7_days",
+    "next_14_days",
+    "this_month",
+    "has_deadline",
+    "no_deadline",
+  ];
+  return (
+    <label
+      className={cn(
+        "border-border bg-surface hover:bg-muted relative inline-flex cursor-pointer items-center gap-1.5 rounded-full border py-0.5 pl-2 pr-2 text-[11.5px] transition-colors",
+        active && "border-foreground bg-foreground/10",
+      )}
+    >
+      <CalendarRange size={11} />
+      <span>{DEADLINE_FILTER_LABELS[value]}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as DeadlineFilter)}
+        aria-label="Deadline filter"
+        className="absolute inset-0 cursor-pointer opacity-0"
+      >
+        {options.map((opt) => (
+          <option key={opt} value={opt}>
+            {DEADLINE_FILTER_LABELS[opt]}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+
 /**
- * Track-and-dot toggle. Position the dot via inline `left:` (rather than
- * Tailwind's `translate-x-*`) so the rendered position is unambiguous —
- * left=3px when off, left=13px when on, on a 26x14 track. Uses
- * `bg-slate-300` for the off state instead of a custom CSS-var-backed
- * token so we can't trip on any Tailwind 4 @theme regeneration quirks.
+ * Track-and-dot toggle. Position the dot via inline `left:` so the
+ * rendered position is unambiguous regardless of any Tailwind 4
+ * @theme regeneration. `bg-slate-300` for off (concrete color) avoids
+ * any custom-token shape issues.
  */
 function Toggle({
   on,
@@ -263,7 +297,7 @@ function Toggle({
       onClick={onClick}
       aria-pressed={on}
       className={cn(
-        "border-border hover:bg-muted inline-flex items-center gap-2 rounded-full border bg-white px-2.5 py-1 text-[11.5px] transition-colors",
+        "border-border bg-surface hover:bg-muted inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11.5px] transition-colors",
         on && "border-foreground/40",
       )}
     >
@@ -271,7 +305,7 @@ function Toggle({
         aria-hidden
         className={cn(
           "relative inline-block flex-shrink-0 rounded-full transition-colors",
-          on ? "bg-emerald-500" : "bg-slate-300",
+          on ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600",
         )}
         style={{ width: 26, height: 14 }}
       >

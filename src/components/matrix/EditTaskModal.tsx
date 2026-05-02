@@ -112,7 +112,7 @@ function EditForm({
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            className="border-border focus:border-foreground rounded-md border bg-white px-2.5 py-1.5 text-sm outline-none"
+            className="border-border focus:border-foreground rounded-md border bg-surface px-2.5 py-1.5 text-sm outline-none"
             autoFocus
           />
         </label>
@@ -150,7 +150,7 @@ function EditForm({
                 }
               }
             }}
-            className="border-border focus:border-foreground resize-y rounded-md border bg-white px-2.5 py-1.5 text-[13px] outline-none"
+            className="border-border focus:border-foreground resize-y rounded-md border bg-surface px-2.5 py-1.5 text-[13px] outline-none"
           />
         </label>
 

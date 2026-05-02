@@ -108,7 +108,7 @@ export function TaskCard({
           disabled={disabled}
           aria-label={task.completed ? "Mark incomplete" : "Mark complete"}
           className={cn(
-            "border-border-strong flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[4px] border bg-white transition-colors",
+            "border-border-strong flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[4px] border bg-surface transition-colors",
             task.completed && "border-emerald-500 bg-emerald-500 text-white",
           )}
         >
@@ -134,7 +134,7 @@ export function TaskCard({
               "inline-flex flex-shrink-0 items-center rounded-[4px] px-1.5 py-px text-[10.5px] font-medium",
               dl.tone === "overdue" && "bg-red-100 text-red-700",
               dl.tone === "soon" && "bg-amber-100 text-amber-800",
-              dl.tone === "default" && "bg-white/70 text-muted-foreground",
+              dl.tone === "default" && "bg-surface/70 text-muted-foreground",
             )}
           >
             {dl.label}
@@ -153,7 +153,7 @@ export function TaskCard({
             ))}
             {overflowCount > 0 && (
               <span
-                className="bg-white/85 text-muted-foreground inline-flex h-[18px] min-w-[20px] items-center justify-center rounded-[4px] px-1 text-[9.5px] font-semibold ring-1 ring-black/10"
+                className="bg-surface/85 text-muted-foreground inline-flex h-[18px] min-w-[20px] items-center justify-center rounded-[4px] px-1 text-[9.5px] font-semibold ring-1 ring-black/10"
                 title={taskTags
                   .slice(MAX_VISIBLE_TAG_BADGES)
                   .map((t) => t.name)
@@ -179,13 +179,17 @@ export function TaskCard({
           </button>
         )}
 
-        {/* Drag affordance — desktop hover only */}
+        {/* Drag handle — wired to dnd-kit listeners so dragging from
+            this icon actually moves the card (was previously a visual-only
+            affordance). The title above is also a drag handle; the grip
+            is the desktop-hover-discoverable alternative. */}
         <span
-          aria-hidden
-          className="text-subtle hidden h-6 w-3 flex-shrink-0 items-center justify-center group-hover:flex"
-          title="Drag to reorder or move"
+          {...listeners}
+          role="button"
+          aria-label="Drag to reorder or move"
+          className="text-subtle hover:text-foreground hidden h-6 w-4 flex-shrink-0 cursor-grab items-center justify-center rounded active:cursor-grabbing group-hover:flex"
         >
-          <GripVertical size={11} />
+          <GripVertical size={12} />
         </span>
 
         {onEdit && (
