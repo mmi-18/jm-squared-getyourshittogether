@@ -76,7 +76,12 @@ export function TaskCard({
       ref={setNodeRef}
       style={style}
       className={cn(
-        "border-border bg-surface group relative flex flex-col gap-1 overflow-hidden rounded-[6px] border py-2 pl-4 pr-2 shadow-sm",
+        // `shrink-0` is critical: without it, when a quadrant has more
+        // tasks than fit in its body, flex's default shrink:1 squishes
+        // each card vertically (clipping titles and pills) instead of
+        // letting the body scroll. shrink-0 pins each card at natural
+        // height; the body's overflow-y-auto then scrolls.
+        "border-border bg-surface group relative flex shrink-0 flex-col gap-1 overflow-hidden rounded-[6px] border py-2 pl-4 pr-2 shadow-sm",
         // Completed visual: subtler bg shift + strikethrough on title
         // (handled below). The previous `opacity-55` faded the whole
         // card including the colored bar, making completed tasks hard

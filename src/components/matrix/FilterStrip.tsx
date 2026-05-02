@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { CalendarRange, Check, ChevronRight, X } from "lucide-react";
+import { CalendarRange, ChevronRight, X } from "lucide-react";
 import type { Tag } from "@prisma/client";
 import { cn } from "@/lib/utils";
 import { DEADLINE_FILTER_LABELS, effectiveTagColor } from "@/lib/quadrant-utils";
@@ -61,7 +61,7 @@ export function FilterStrip({
     !filters.showCompleted;
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
+    <div className="flex flex-wrap items-start gap-1.5">
       {tree.map((node) => (
         <TagChipWithSubs
           key={node.id}
@@ -222,10 +222,7 @@ function TagChipWithSubs({
       </div>
 
       {isExpanded && hasChildren && (
-        <div
-          className="bg-muted/50 border-border ml-2 flex flex-wrap items-center gap-1 rounded-lg border px-2 py-1"
-          style={{ animation: "em-fade-in 180ms ease-out" }}
-        >
+        <div className="border-border-strong ml-2.5 flex flex-wrap items-start gap-1 border-l-2 pl-2 pt-1">
           {node.children.map((child) => (
             <TagChipWithSubs
               key={child.id}
@@ -245,10 +242,11 @@ function TagChipWithSubs({
 }
 
 /**
- * Boolean filter pill. Solid emerald when on (with a check), outlined
- * white when off — matches the DeadlineFilterPill aesthetic and reads
- * as on/off at a glance, unlike the previous track-and-dot switch which
- * looked broken next to the longer text label.
+ * Track-and-dot toggle. Position the dot via inline `left:` (rather than
+ * Tailwind's `translate-x-*`) so the rendered position is unambiguous —
+ * left=3px when off, left=13px when on, on a 26x14 track. Uses
+ * `bg-slate-300` for the off state instead of a custom CSS-var-backed
+ * token so we can't trip on any Tailwind 4 @theme regeneration quirks.
  */
 function Toggle({
   on,
@@ -265,13 +263,23 @@ function Toggle({
       onClick={onClick}
       aria-pressed={on}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11.5px] transition-colors",
-        on
-          ? "border-emerald-500 bg-emerald-500 text-white hover:bg-emerald-600"
-          : "border-border bg-white text-foreground hover:bg-muted",
+        "border-border hover:bg-muted inline-flex items-center gap-2 rounded-full border bg-white px-2.5 py-1 text-[11.5px] transition-colors",
+        on && "border-foreground/40",
       )}
     >
-      {on && <Check size={12} strokeWidth={3} />}
+      <span
+        aria-hidden
+        className={cn(
+          "relative inline-block flex-shrink-0 rounded-full transition-colors",
+          on ? "bg-emerald-500" : "bg-slate-300",
+        )}
+        style={{ width: 26, height: 14 }}
+      >
+        <span
+          className="absolute h-2.5 w-2.5 rounded-full bg-white shadow transition-[left] duration-150"
+          style={{ top: 2, left: on ? 13 : 3 }}
+        />
+      </span>
       {label}
     </button>
   );
