@@ -4,7 +4,14 @@ import { useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Check, FileText, GripVertical, Pencil, Trash2 } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  FileText,
+  GripVertical,
+  Pencil,
+  Trash2,
+} from "lucide-react";
 import type { Tag, Task } from "@prisma/client";
 import { cn } from "@/lib/utils";
 import {
@@ -39,6 +46,9 @@ export function TaskCard({
   task,
   tagsById,
   depth = 0,
+  hasChildren = false,
+  isCollapsed = false,
+  onToggleCollapsed,
   disabled,
   onToggle,
   onDelete,
@@ -47,6 +57,9 @@ export function TaskCard({
   task: TaskWithTagIds;
   tagsById: Map<string, Tag>;
   depth?: number;
+  hasChildren?: boolean;
+  isCollapsed?: boolean;
+  onToggleCollapsed?: () => void;
   disabled: boolean;
   onToggle: () => void;
   onDelete: () => void;
@@ -60,9 +73,6 @@ export function TaskCard({
       parentId: task.parentId,
       depth,
     },
-    // Subtasks aren't individually draggable. Reorder/move only fires from
-    // the top-level cards; subtasks follow their parent's quadrant.
-    disabled: depth > 0,
   });
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     sortable;
@@ -140,13 +150,28 @@ export function TaskCard({
           {task.completed && <Check size={11} strokeWidth={3} />}
         </button>
 
-        {/* Title — drag handle when depth=0; static for subtasks */}
+        {/* Fold/unfold chevron — only when this task has subtasks */}
+        {hasChildren && onToggleCollapsed && (
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            aria-label={isCollapsed ? "Expand subtasks" : "Collapse subtasks"}
+            aria-expanded={!isCollapsed}
+            className={cn(
+              "text-muted-foreground hover:text-foreground hover:bg-muted/80 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded transition-transform",
+              !isCollapsed && "rotate-90",
+            )}
+          >
+            <ChevronRight size={12} />
+          </button>
+        )}
+
+        {/* Title — drag handle (works for top-level AND subtasks now) */}
         <div
-          {...(depth === 0 ? attributes : {})}
-          {...(depth === 0 ? listeners : {})}
+          {...attributes}
+          {...listeners}
           className={cn(
-            "min-w-0 flex-1 truncate text-[13.5px]",
-            depth === 0 && "cursor-grab active:cursor-grabbing",
+            "min-w-0 flex-1 cursor-grab truncate text-[13.5px] active:cursor-grabbing",
             task.completed && "text-muted-foreground line-through",
           )}
         >
@@ -202,17 +227,15 @@ export function TaskCard({
           </button>
         )}
 
-        {/* Drag handle (top-level only) — wired to dnd-kit listeners */}
-        {depth === 0 && (
-          <span
-            {...listeners}
-            role="button"
-            aria-label="Drag to reorder, move, or nest"
-            className="text-subtle hover:text-foreground hidden h-6 w-4 flex-shrink-0 cursor-grab items-center justify-center rounded active:cursor-grabbing group-hover:flex"
-          >
-            <GripVertical size={12} />
-          </span>
-        )}
+        {/* Drag handle — wired to dnd-kit listeners (works for any depth) */}
+        <span
+          {...listeners}
+          role="button"
+          aria-label="Drag to reorder, move, or nest"
+          className="text-subtle hover:text-foreground hidden h-6 w-4 flex-shrink-0 cursor-grab items-center justify-center rounded active:cursor-grabbing group-hover:flex"
+        >
+          <GripVertical size={12} />
+        </span>
 
         {onEdit && (
           <button

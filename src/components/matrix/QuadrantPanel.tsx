@@ -13,7 +13,11 @@ import { QUADRANT_ACCENT } from "@/lib/quadrant-utils";
 import { TaskCard, type TaskWithTagIds } from "./TaskCard";
 import { InlineTaskForm } from "./InlineTaskForm";
 
-export type RenderedTask = TaskWithTagIds & { depth: number };
+export type RenderedTask = TaskWithTagIds & {
+  depth: number;
+  hasChildren: boolean;
+  isCollapsed: boolean;
+};
 
 /**
  * One quadrant of the 2×2 matrix.
@@ -38,6 +42,7 @@ export function QuadrantPanel({
   onToggleTask,
   onDeleteTask,
   onEditTask,
+  onToggleCollapsed,
 }: {
   quadrant: Quadrant;
   tasks: RenderedTask[];
@@ -56,6 +61,7 @@ export function QuadrantPanel({
   onToggleTask: (id: string) => void;
   onDeleteTask: (id: string) => void;
   onEditTask: (task: TaskWithTagIds) => void;
+  onToggleCollapsed: (id: string) => void;
 }) {
   const meta = QUADRANTS[quadrant];
   const { isOver, setNodeRef } = useDroppable({
@@ -125,6 +131,9 @@ export function QuadrantPanel({
               key={task.id}
               task={task}
               depth={task.depth}
+              hasChildren={task.hasChildren}
+              isCollapsed={task.isCollapsed}
+              onToggleCollapsed={() => onToggleCollapsed(task.id)}
               tagsById={tagsById}
               disabled={pending}
               onToggle={() => onToggleTask(task.id)}

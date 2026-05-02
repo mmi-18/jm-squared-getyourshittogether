@@ -133,9 +133,10 @@ export async function toggleTaskCompleted(id: string) {
 /**
  * Soft-delete. Cascades to subtasks via the same call (parent_id FK has
  * onDelete: Cascade for hard deletes, but soft deletes need explicit
- * recursion).
+ * recursion). Returns the list of soft-deleted ids so the caller can
+ * later pass them to `restoreTasks` to undo the deletion.
  */
-export async function deleteTask(id: string) {
+export async function deleteTask(id: string): Promise<{ deletedIds: string[] }> {
   const user = await requireUser();
   const target = await db.task.findFirst({
     where: { id, userId: user.id, deletedAt: null },
@@ -143,12 +144,34 @@ export async function deleteTask(id: string) {
   });
   if (!target) throw new Error("Task not found");
 
-  // Collect descendants in one pass (max nesting in practice is 2-3 levels;
-  // a recursive CTE would be overkill).
   const ids = await collectDescendants(id, user.id);
+  const allIds = [id, ...ids];
   await db.task.updateMany({
-    where: { id: { in: [id, ...ids] } },
+    where: { id: { in: allIds } },
     data: { deletedAt: new Date() },
+  });
+  revalidate();
+  return { deletedIds: allIds };
+}
+
+/**
+ * Undo a soft-delete. Sets `deletedAt = null` on every id in the list
+ * that the caller owns and was previously soft-deleted. Used by the
+ * undo toast after a delete.
+ */
+export async function restoreTasks(ids: string[]) {
+  const user = await requireUser();
+  if (ids.length === 0) return;
+  await db.task.updateMany({
+    where: {
+      id: { in: ids },
+      userId: user.id,
+      // Only restore actually-deleted rows. Skipping live rows is a
+      // no-op; we don't want to accidentally overwrite a freshly-edited
+      // task with a stale state.
+      deletedAt: { not: null },
+    },
+    data: { deletedAt: null },
   });
   revalidate();
 }
@@ -193,12 +216,15 @@ export async function moveTaskToQuadrant(id: string, quadrant: Quadrant) {
  * the entire descendant subtree) snaps to the new parent's quadrant —
  * subtasks always live in the same quadrant as their parent.
  *
- * `newParentId === null` un-nests, making the child a top-level task in
- * its current quadrant.
+ * `newParentId === null` un-nests. Optional `newQuadrant` overrides the
+ * destination quadrant when un-nesting (used by subtask DnD: drag a
+ * subtask into the empty body of a different quadrant → it becomes
+ * top-level in that quadrant).
  */
 export async function nestTask(input: {
   childId: string;
   newParentId: string | null;
+  newQuadrant?: Quadrant;
 }) {
   const user = await requireUser();
 
@@ -227,7 +253,6 @@ export async function nestTask(input: {
       throw new Error("Can't nest into a descendant");
     }
 
-    // Place at the end of newParent's children list.
     const last = await db.task.findFirst({
       where: {
         parentId: input.newParentId,
@@ -240,29 +265,45 @@ export async function nestTask(input: {
     const sortOrder = (last?.sortOrder ?? -1) + 1;
 
     await db.$transaction([
-      // Cascade quadrant to the entire subtree.
       db.task.updateMany({
         where: { id: { in: [input.childId, ...descendants] } },
         data: { quadrant: newParent.quadrant },
       }),
-      // Re-parent.
       db.task.update({
         where: { id: input.childId },
         data: { parentId: input.newParentId, sortOrder },
       }),
     ]);
   } else {
-    // Un-nest: become top-level in current quadrant, at end of list.
+    // Un-nest. Use newQuadrant override if provided (subtask dragged
+    // into another quadrant); else stay in current quadrant.
+    const targetQuadrant: Quadrant =
+      (input.newQuadrant ?? child.quadrant) as Quadrant;
+    if (![1, 2, 3, 4].includes(targetQuadrant)) {
+      throw new Error("Invalid quadrant");
+    }
+
     const last = await db.task.findFirst({
       where: {
         userId: user.id,
-        quadrant: child.quadrant,
+        quadrant: targetQuadrant,
         parentId: null,
         deletedAt: null,
       },
       orderBy: { sortOrder: "desc" },
       select: { sortOrder: true },
     });
+
+    // If the destination quadrant differs, cascade the change to the
+    // entire subtree so subtasks travel with the un-nested task.
+    if (targetQuadrant !== child.quadrant) {
+      const descendants = await collectDescendants(input.childId, user.id);
+      await db.task.updateMany({
+        where: { id: { in: [input.childId, ...descendants] } },
+        data: { quadrant: targetQuadrant },
+      });
+    }
+
     await db.task.update({
       where: { id: input.childId },
       data: { parentId: null, sortOrder: (last?.sortOrder ?? -1) + 1 },

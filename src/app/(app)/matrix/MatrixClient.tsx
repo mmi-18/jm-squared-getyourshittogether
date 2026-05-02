@@ -18,6 +18,7 @@ import {
   DragOverlay,
 } from "@dnd-kit/core";
 import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
+import { Undo2, X as XIcon } from "lucide-react";
 import type { Tag } from "@prisma/client";
 import { Theme } from "@prisma/client";
 import { type FilterState, type Quadrant } from "@/lib/types";
@@ -28,6 +29,7 @@ import {
   deleteTask,
   nestTask,
   reorderTasks,
+  restoreTasks,
   toggleTaskCompleted,
 } from "../_actions/tasks";
 import { updateUserFilters } from "../_actions/settings";
@@ -37,6 +39,13 @@ import { FilterStrip } from "@/components/matrix/FilterStrip";
 import { TagManagerModal } from "@/components/matrix/TagManagerModal";
 import { TaskCard, type TaskWithTagIds } from "@/components/matrix/TaskCard";
 import { EditTaskModal } from "@/components/matrix/EditTaskModal";
+
+const COLLAPSED_STORAGE_KEY = "gyst-collapsed-tasks";
+
+type UndoAction = {
+  description: string;
+  run: () => Promise<void>;
+};
 
 export function MatrixClient({
   initialTasks,
@@ -54,7 +63,7 @@ export function MatrixClient({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
 
-  // ── Filter state — local + debounced server sync ─────────────────────
+  // ── Filters ──────────────────────────────────────────────────────────
   const [filters, setFilters] = useState<FilterState>(initialFilters);
   const [lastServerSync, setLastServerSync] = useState(JSON.stringify(initialFilters));
   useEffect(() => {
@@ -67,7 +76,7 @@ export function MatrixClient({
     return () => clearTimeout(handle);
   }, [filters, lastServerSync]);
 
-  // ── Theme ─────────────────────────────────────────────────────────────
+  // ── Theme ────────────────────────────────────────────────────────────
   useEffect(() => {
     applyTheme(initialTheme);
     if (initialTheme !== "system") return;
@@ -77,9 +86,7 @@ export function MatrixClient({
     return () => mq.removeEventListener?.("change", onChange);
   }, [initialTheme]);
 
-  // ── Tasks state — optimistic mirror of server-rendered initialTasks ──
-  // Re-sync when the server prop changes (after revalidatePath()) using
-  // the React 19 "adjust state when a prop changes" pattern.
+  // ── Tasks state — re-sync when server prop changes ───────────────────
   const [tasks, setTasks] = useState(initialTasks);
   const [prevInitialTasks, setPrevInitialTasks] = useState(initialTasks);
   if (prevInitialTasks !== initialTasks) {
@@ -93,9 +100,35 @@ export function MatrixClient({
     return m;
   }, [initialTags]);
 
+  // ── Collapse state — fold/unfold subtasks per task, persisted to LS ──
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const raw = localStorage.getItem(COLLAPSED_STORAGE_KEY);
+      if (!raw) return new Set();
+      const arr = JSON.parse(raw);
+      return new Set(Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : []);
+    } catch {
+      return new Set();
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...collapsedIds]));
+    } catch {
+      /* quota / private mode — ignore */
+    }
+  }, [collapsedIds]);
+  const toggleCollapsed = (id: string) => {
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   // ── Build the depth-annotated, ordered task list per quadrant ────────
-  // Filter applies to top-level tasks; their entire subtree comes along
-  // for the ride (showing subtasks of a hidden parent would be confusing).
   const filteredByQuadrant = useMemo(() => {
     const matchSet = new Set<string>();
     for (const id of filters.selectedTagIds) {
@@ -109,7 +142,6 @@ export function MatrixClient({
       return t.tagIds.some((id) => matchSet.has(id));
     };
 
-    // Index children by parent for the recursive build.
     const childrenByParent = new Map<string, TaskWithTagIds[]>();
     for (const t of tasks) {
       if (!t.parentId) continue;
@@ -132,13 +164,18 @@ export function MatrixClient({
       depth: number,
       into: RenderedTask[],
     ) => {
-      into.push({ ...task, depth });
-      for (const child of childrenByParent.get(task.id) ?? []) {
-        append(child, depth + 1, into);
-      }
+      const children = childrenByParent.get(task.id) ?? [];
+      const isCollapsed = collapsedIds.has(task.id);
+      into.push({
+        ...task,
+        depth,
+        hasChildren: children.length > 0,
+        isCollapsed,
+      });
+      if (isCollapsed) return; // skip rendering descendants when collapsed
+      for (const child of children) append(child, depth + 1, into);
     };
 
-    // Top-level passing tasks bring their subtrees with them.
     const topLevel = tasks
       .filter((t) => !t.parentId && passes(t))
       .sort(
@@ -148,10 +185,8 @@ export function MatrixClient({
       );
     for (const t of topLevel) append(t, 0, map[t.quadrant as Quadrant]);
     return map;
-  }, [tasks, filters, initialTags]);
+  }, [tasks, filters, initialTags, collapsedIds]);
 
-  // Counts per tag — counts tasks (top-level + subtasks) tagged with the
-  // tag *or any of its descendants*.
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const tag of initialTags) {
@@ -178,8 +213,6 @@ export function MatrixClient({
   const activeTask =
     activeId ? tasks.find((t) => t.id === activeId) ?? null : null;
 
-  // Pre-compute the active task's descendants (cycle-prevention for
-  // drag-to-nest). Recomputed when tasks change; cheap.
   const activeDescendants = useMemo(() => {
     if (!activeId) return new Set<string>();
     const childrenByParent = new Map<string, string[]>();
@@ -203,12 +236,6 @@ export function MatrixClient({
     return out;
   }, [activeId, tasks]);
 
-  /**
-   * Custom collision detector: pointer-within wins for nest droppables
-   * (so dropping ON a card nests under it). Self + descendants are
-   * skipped to prevent cycles. Falls back to closestCenter for the
-   * sortable / quadrant droppables (gap-based reorder + cross-quadrant).
-   */
   const collisionDetection: CollisionDetection = (args) => {
     const pointerCollisions = pointerWithin(args);
     const nestHit = pointerCollisions.find((c) => {
@@ -225,11 +252,6 @@ export function MatrixClient({
 
   const onDragStart = (e: DragStartEvent) => setActiveId(String(e.active.id));
 
-  /**
-   * As the user drags across containers, mirror the move locally so the
-   * source quadrant doesn't leave a gap. Only relevant for top-level
-   * tasks (depth=0) since subtasks are non-draggable.
-   */
   const onDragOver = (e: DragOverEvent) => {
     const { active, over } = e;
     if (!over) return;
@@ -240,7 +262,8 @@ export function MatrixClient({
       | { type: "task" | "quadrant" | "nest"; quadrant?: Quadrant }
       | undefined;
     if (!activeData || !overData) return;
-    if (overData.type === "nest") return; // hovering for nest, no reorder mirror
+    if (overData.type === "nest") return;
+    if (activeData.parentId !== null) return; // mirror only top-level cross-quadrant
 
     const sourceQ = activeData.quadrant;
     const targetQ = overData.quadrant;
@@ -266,8 +289,12 @@ export function MatrixClient({
     if (!over) return;
 
     const overId = String(over.id);
+    const activeData = active.data.current as
+      | { type: "task"; quadrant: Quadrant; parentId: string | null }
+      | undefined;
+    if (!activeData) return;
 
-    // ── NEST: dropped on another card's nest droppable ────────────────
+    // ── NEST: drop on another card's nest droppable ───────────────────
     if (overId.startsWith("nest-")) {
       const targetId = overId.slice(5);
       startTransition(async () => {
@@ -282,12 +309,44 @@ export function MatrixClient({
       return;
     }
 
-    // ── REORDER + cross-quadrant move ─────────────────────────────────
-    const activeData = active.data.current as
-      | { type: "task"; quadrant: Quadrant; parentId: string | null }
-      | undefined;
-    if (!activeData) return;
+    const isSubtask = activeData.parentId !== null;
 
+    // ── SUBTASK drag: reparent based on what we dropped near ──────────
+    // Position-wise: the moved subtask lands at the END of its new
+    // sibling group. Fine-grained reorder of subtasks is uncommon
+    // enough that we trade it for simpler logic.
+    if (isSubtask) {
+      let newParentId: string | null = null;
+      let newQuadrant: Quadrant | undefined;
+
+      if (overId.startsWith("quadrant-")) {
+        newQuadrant = Number(overId.slice("quadrant-".length)) as Quadrant;
+        newParentId = null;
+      } else {
+        const overTask = tasks.find((t) => t.id === overId);
+        if (!overTask) return;
+        // Become a sibling of the over task: same parentId, same quadrant.
+        newParentId = overTask.parentId;
+        newQuadrant = overTask.quadrant as Quadrant;
+      }
+
+      startTransition(async () => {
+        try {
+          await nestTask({
+            childId: String(active.id),
+            newParentId,
+            newQuadrant,
+          });
+          router.refresh();
+        } catch (err) {
+          console.error("nestTask (subtask drag) failed:", err);
+          router.refresh();
+        }
+      });
+      return;
+    }
+
+    // ── TOP-LEVEL reorder + cross-quadrant move ───────────────────────
     if (active.id !== over.id) {
       const overData = over.data.current as
         | { type: "task" | "quadrant"; quadrant: Quadrant }
@@ -320,15 +379,12 @@ export function MatrixClient({
     });
   };
 
-  // ── Tag manager modal ─────────────────────────────────────────────────
+  // ── Tag manager / edit modal ──────────────────────────────────────────
   const [tagsOpen, setTagsOpen] = useState(false);
-
-  // ── Edit task modal ───────────────────────────────────────────────────
   const [editingTask, setEditingTask] = useState<TaskWithTagIds | null>(null);
 
-  // ── Inline-add state, scoped per quadrant ─────────────────────────────
+  // ── Add task ──────────────────────────────────────────────────────────
   const [adding, setAdding] = useState<Quadrant | null>(null);
-
   const submitTask = (q: Quadrant) =>
     (input: {
       title: string;
@@ -342,6 +398,30 @@ export function MatrixClient({
         router.refresh();
       });
     };
+
+  // ── Undo: capture last destructive action so a toast can revert it ───
+  const [pendingUndo, setPendingUndo] = useState<UndoAction | null>(null);
+
+  const handleDelete = (id: string) =>
+    startTransition(async () => {
+      try {
+        const result = await deleteTask(id);
+        const ids = result?.deletedIds ?? [];
+        setPendingUndo({
+          description:
+            ids.length === 1
+              ? "Task deleted"
+              : `Task + ${ids.length - 1} subtask${ids.length === 2 ? "" : "s"} deleted`,
+          run: async () => {
+            await restoreTasks(ids);
+            router.refresh();
+          },
+        });
+        router.refresh();
+      } catch (err) {
+        console.error("deleteTask failed:", err);
+      }
+    });
 
   return (
     <div className="bg-background flex h-screen flex-col">
@@ -386,13 +466,9 @@ export function MatrixClient({
                   router.refresh();
                 })
               }
-              onDeleteTask={(id) =>
-                startTransition(async () => {
-                  await deleteTask(id);
-                  router.refresh();
-                })
-              }
+              onDeleteTask={handleDelete}
               onEditTask={(t) => setEditingTask(t)}
+              onToggleCollapsed={toggleCollapsed}
             />
           ))}
         </div>
@@ -422,6 +498,72 @@ export function MatrixClient({
         tags={initialTags}
         onClose={() => setEditingTask(null)}
       />
+
+      {pendingUndo && (
+        <UndoToast
+          action={pendingUndo}
+          onDismiss={() => setPendingUndo(null)}
+          onUndo={() => {
+            const action = pendingUndo;
+            setPendingUndo(null);
+            startTransition(async () => {
+              try {
+                await action.run();
+              } catch (err) {
+                console.error("undo failed:", err);
+              }
+            });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Toast that appears at the bottom of the screen after a destructive
+ * action, offering an Undo for ~6 seconds. Click Undo to revert; click
+ * the X to dismiss without undoing. Auto-dismisses on timeout.
+ */
+function UndoToast({
+  action,
+  onUndo,
+  onDismiss,
+}: {
+  action: UndoAction;
+  onUndo: () => void;
+  onDismiss: () => void;
+}) {
+  useEffect(() => {
+    const handle = setTimeout(onDismiss, 6000);
+    return () => clearTimeout(handle);
+    // Restart the timer when a new action arrives.
+  }, [action, onDismiss]);
+
+  return (
+    <div
+      role="status"
+      className="bg-foreground text-background fixed bottom-4 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-3 rounded-lg px-4 py-2 shadow-md"
+    >
+      <span className="text-sm">{action.description}</span>
+      <button
+        type="button"
+        onClick={onUndo}
+        className="text-accent inline-flex items-center gap-1 text-sm font-medium hover:underline"
+      >
+        <Undo2 size={13} />
+        Undo
+      </button>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        className="text-background/70 hover:text-background"
+      >
+        <XIcon size={14} />
+      </button>
     </div>
   );
 }
