@@ -210,16 +210,112 @@ export async function moveTaskToQuadrant(id: string, quadrant: Quadrant) {
 }
 
 /**
- * Drag-to-nest: set `parentId` of `childId` to `newParentId`. Cycle
- * prevention checks both that the new parent isn't the child itself and
- * that it isn't a descendant of the child. The child's quadrant (and
- * the entire descendant subtree) snaps to the new parent's quadrant —
- * subtasks always live in the same quadrant as their parent.
+ * Unified drag-end action.
  *
- * `newParentId === null` un-nests. Optional `newQuadrant` overrides the
- * destination quadrant when un-nesting (used by subtask DnD: drag a
- * subtask into the empty body of a different quadrant → it becomes
- * top-level in that quadrant).
+ * Handles every drag drop case in one transaction:
+ *   - reorder within siblings (same parentId + quadrant)
+ *   - nest under another task (newParentId = target task id)
+ *   - un-nest (newParentId = null)
+ *   - cross-quadrant move (newQuadrant differs from current)
+ *   - any combination of the above
+ *
+ * The client sends the FULL new sibling list (including the moving task
+ * at its target position). The server cascades the quadrant change to
+ * the entire moving subtree, updates the parentId, and rewrites
+ * sortOrder for the new sibling group from the array index.
+ *
+ * Cycle prevention: newParentId can't be the moving task or any of its
+ * descendants. Validated server-side; the client mirrors this check
+ * to skip nest droppables for descendants during drag.
+ *
+ * One transaction = one server roundtrip per drop, regardless of how
+ * many tasks shifted positions. Critical for keeping drag UX snappy.
+ */
+export async function moveTask(input: {
+  taskId: string;
+  newParentId: string | null;
+  newQuadrant: Quadrant;
+  /** Ordered ids of the destination sibling group, INCLUDING `taskId`. */
+  newSiblingsOrder: string[];
+}) {
+  const user = await requireUser();
+
+  if (![1, 2, 3, 4].includes(input.newQuadrant)) {
+    throw new Error("Invalid quadrant");
+  }
+  if (!input.newSiblingsOrder.includes(input.taskId)) {
+    throw new Error("newSiblingsOrder must include taskId");
+  }
+
+  const moving = await db.task.findFirst({
+    where: { id: input.taskId, userId: user.id, deletedAt: null },
+    select: { id: true, parentId: true, quadrant: true },
+  });
+  if (!moving) throw new Error("Task not found");
+
+  if (input.newParentId) {
+    if (input.newParentId === input.taskId) {
+      throw new Error("Can't nest a task into itself");
+    }
+    const newParent = await db.task.findFirst({
+      where: { id: input.newParentId, userId: user.id, deletedAt: null },
+      select: { id: true },
+    });
+    if (!newParent) throw new Error("New parent not found");
+    const descendants = await collectDescendants(input.taskId, user.id);
+    if (descendants.includes(input.newParentId)) {
+      throw new Error("Can't nest into a descendant");
+    }
+  }
+
+  // Verify all sibling ids belong to user (one query before writes).
+  const owned = await db.task.findMany({
+    where: {
+      id: { in: input.newSiblingsOrder },
+      userId: user.id,
+      deletedAt: null,
+    },
+    select: { id: true },
+  });
+  if (owned.length !== input.newSiblingsOrder.length) {
+    throw new Error("Some sibling ids aren't yours");
+  }
+
+  await db.$transaction(async (tx) => {
+    // Cascade the new quadrant to the entire moving subtree.
+    if (moving.quadrant !== input.newQuadrant) {
+      const descendants = await collectDescendants(input.taskId, user.id);
+      await tx.task.updateMany({
+        where: { id: { in: [input.taskId, ...descendants] } },
+        data: { quadrant: input.newQuadrant },
+      });
+    }
+
+    // Re-parent the moving task.
+    if (moving.parentId !== input.newParentId) {
+      await tx.task.update({
+        where: { id: input.taskId },
+        data: { parentId: input.newParentId },
+      });
+    }
+
+    // Rewrite sortOrder for the entire new sibling group.
+    for (let i = 0; i < input.newSiblingsOrder.length; i++) {
+      await tx.task.update({
+        where: { id: input.newSiblingsOrder[i] },
+        data: { sortOrder: i },
+      });
+    }
+  });
+
+  revalidate();
+}
+
+/**
+ * @deprecated Kept only for legacy callers; new code should use
+ * `moveTask`. Wrapper that derives newSiblingsOrder server-side
+ * (appends to end of new parent's children, or current quadrant for
+ * un-nest).
  */
 export async function nestTask(input: {
   childId: string;
@@ -313,13 +409,9 @@ export async function nestTask(input: {
 }
 
 /**
- * Reorder tasks within a quadrant (and optional parent — for subtasks).
- * Pass the new ordered list of IDs; we rewrite their `sortOrder` to match
- * the array index. The DnD layer constructs this array from the post-drag
- * sortable state.
- *
- * Validates that every ID belongs to the caller (one query) before any
- * writes happen.
+ * @deprecated Replaced by `moveTask`. Kept temporarily so any in-flight
+ * client code doesn't break. Will be removed once the matrix is fully
+ * migrated.
  */
 export async function reorderTasks(input: {
   quadrant: Quadrant;
@@ -328,7 +420,6 @@ export async function reorderTasks(input: {
 }) {
   const user = await requireUser();
   if (input.orderedIds.length === 0) return;
-
   const owned = await db.task.findMany({
     where: { id: { in: input.orderedIds }, userId: user.id, deletedAt: null },
     select: { id: true },
@@ -336,9 +427,6 @@ export async function reorderTasks(input: {
   if (owned.length !== input.orderedIds.length) {
     throw new Error("Some tasks are not owned by user or were deleted");
   }
-
-  // One UPDATE per task. With ~20-30 tasks per quadrant this is fine; we
-  // can switch to a CASE-WHEN bulk update if it ever becomes a hotspot.
   await db.$transaction(
     input.orderedIds.map((id, idx) =>
       db.task.update({

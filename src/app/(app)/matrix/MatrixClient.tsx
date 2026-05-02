@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   DndContext,
@@ -13,11 +13,10 @@ import {
   useSensors,
   type CollisionDetection,
   type DragEndEvent,
-  type DragOverEvent,
   type DragStartEvent,
   DragOverlay,
 } from "@dnd-kit/core";
-import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
+import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { Undo2, X as XIcon } from "lucide-react";
 import type { Tag } from "@prisma/client";
 import { Theme } from "@prisma/client";
@@ -27,8 +26,7 @@ import { passesDeadlineFilter } from "@/lib/quadrant-utils";
 import {
   createTask,
   deleteTask,
-  nestTask,
-  reorderTasks,
+  moveTask,
   restoreTasks,
   toggleTaskCompleted,
 } from "../_actions/tasks";
@@ -42,10 +40,7 @@ import { EditTaskModal } from "@/components/matrix/EditTaskModal";
 
 const COLLAPSED_STORAGE_KEY = "gyst-collapsed-tasks";
 
-type UndoAction = {
-  description: string;
-  run: () => Promise<void>;
-};
+type UndoAction = { description: string; run: () => Promise<void> };
 
 export function MatrixClient({
   initialTasks,
@@ -100,7 +95,7 @@ export function MatrixClient({
     return m;
   }, [initialTags]);
 
-  // ── Collapse state — fold/unfold subtasks per task, persisted to LS ──
+  // ── Collapse state — persisted per-browser ──────────────────────────
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
     try {
@@ -116,7 +111,7 @@ export function MatrixClient({
     try {
       localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...collapsedIds]));
     } catch {
-      /* quota / private mode — ignore */
+      /* private mode / quota — ignore */
     }
   }, [collapsedIds]);
   const toggleCollapsed = (id: string) => {
@@ -128,7 +123,7 @@ export function MatrixClient({
     });
   };
 
-  // ── Build the depth-annotated, ordered task list per quadrant ────────
+  // ── Render-ready task tree per quadrant ──────────────────────────────
   const filteredByQuadrant = useMemo(() => {
     const matchSet = new Set<string>();
     for (const id of filters.selectedTagIds) {
@@ -172,7 +167,7 @@ export function MatrixClient({
         hasChildren: children.length > 0,
         isCollapsed,
       });
-      if (isCollapsed) return; // skip rendering descendants when collapsed
+      if (isCollapsed) return;
       for (const child of children) append(child, depth + 1, into);
     };
 
@@ -200,7 +195,7 @@ export function MatrixClient({
     return counts;
   }, [initialTags, tasks]);
 
-  // ── DnD sensors ──────────────────────────────────────────────────────
+  // ── DnD ──────────────────────────────────────────────────────────────
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(TouchSensor, {
@@ -213,28 +208,12 @@ export function MatrixClient({
   const activeTask =
     activeId ? tasks.find((t) => t.id === activeId) ?? null : null;
 
-  const activeDescendants = useMemo(() => {
-    if (!activeId) return new Set<string>();
-    const childrenByParent = new Map<string, string[]>();
-    for (const t of tasks) {
-      if (!t.parentId) continue;
-      const list = childrenByParent.get(t.parentId);
-      if (list) list.push(t.id);
-      else childrenByParent.set(t.parentId, [t.id]);
-    }
-    const out = new Set<string>();
-    const stack = [activeId];
-    while (stack.length) {
-      const id = stack.pop()!;
-      for (const c of childrenByParent.get(id) ?? []) {
-        if (!out.has(c)) {
-          out.add(c);
-          stack.push(c);
-        }
-      }
-    }
-    return out;
-  }, [activeId, tasks]);
+  // Active descendants are needed for cycle prevention when dropping
+  // ON another card. We only need to know this *during* a drag — not
+  // every render — so cache it in a ref at drag start. (Was previously
+  // a useMemo over [activeId, tasks], which recomputed on every state
+  // tick.)
+  const activeDescendantsRef = useRef<Set<string>>(new Set());
 
   const collisionDetection: CollisionDetection = (args) => {
     const pointerCollisions = pointerWithin(args);
@@ -243,147 +222,167 @@ export function MatrixClient({
       if (!cid.startsWith("nest-")) return false;
       const taskId = cid.slice(5);
       if (taskId === activeId) return false;
-      if (activeDescendants.has(taskId)) return false;
+      if (activeDescendantsRef.current.has(taskId)) return false;
       return true;
     });
     if (nestHit) return [nestHit];
     return closestCenter(args);
   };
 
-  const onDragStart = (e: DragStartEvent) => setActiveId(String(e.active.id));
+  const onDragStart = (e: DragStartEvent) => {
+    const id = String(e.active.id);
+    setActiveId(id);
 
-  const onDragOver = (e: DragOverEvent) => {
-    const { active, over } = e;
-    if (!over) return;
-    const activeData = active.data.current as
-      | { type: "task"; quadrant: Quadrant; parentId: string | null }
-      | undefined;
-    const overData = over.data.current as
-      | { type: "task" | "quadrant" | "nest"; quadrant?: Quadrant }
-      | undefined;
-    if (!activeData || !overData) return;
-    if (overData.type === "nest") return;
-    if (activeData.parentId !== null) return; // mirror only top-level cross-quadrant
-
-    const sourceQ = activeData.quadrant;
-    const targetQ = overData.quadrant;
-    if (!targetQ || sourceQ === targetQ) return;
-
-    setTasks((prev) => {
-      const idx = prev.findIndex((t) => t.id === active.id);
-      if (idx === -1) return prev;
-      const moved = { ...prev[idx], quadrant: targetQ as Quadrant };
-      const without = [...prev.slice(0, idx), ...prev.slice(idx + 1)];
-      if (overData.type === "task") {
-        const overIdx = without.findIndex((t) => t.id === over.id);
-        if (overIdx === -1) return [...without, moved];
-        return [...without.slice(0, overIdx), moved, ...without.slice(overIdx)];
+    // Compute descendants once at drag start.
+    const childrenByParent = new Map<string, string[]>();
+    for (const t of tasks) {
+      if (!t.parentId) continue;
+      const list = childrenByParent.get(t.parentId);
+      if (list) list.push(t.id);
+      else childrenByParent.set(t.parentId, [t.id]);
+    }
+    const out = new Set<string>();
+    const stack = [id];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      for (const c of childrenByParent.get(cur) ?? []) {
+        if (!out.has(c)) {
+          out.add(c);
+          stack.push(c);
+        }
       }
-      return [...without, moved];
-    });
+    }
+    activeDescendantsRef.current = out;
   };
 
+  /**
+   * On drop, do everything optimistically + locally first. Server fires
+   * in the background. Don't `router.refresh()` on success — local
+   * state already matches what the server's about to write. Only
+   * refresh on error to roll back.
+   */
   const onDragEnd = (e: DragEndEvent) => {
     const { active, over } = e;
     setActiveId(null);
-    if (!over) return;
+    activeDescendantsRef.current = new Set();
+    if (!over || active.id === over.id) return;
 
     const overId = String(over.id);
-    const activeData = active.data.current as
-      | { type: "task"; quadrant: Quadrant; parentId: string | null }
-      | undefined;
-    if (!activeData) return;
+    const taskId = String(active.id);
+    const activeTaskNow = tasks.find((t) => t.id === taskId);
+    if (!activeTaskNow) return;
 
-    // ── NEST: drop on another card's nest droppable ───────────────────
+    // ── Determine target group + insertion position ───────────────────
+    let newParentId: string | null;
+    let newQuadrant: Quadrant;
+    let insertAtFrontOfNestTarget = false;
+
     if (overId.startsWith("nest-")) {
-      const targetId = overId.slice(5);
-      startTransition(async () => {
-        try {
-          await nestTask({ childId: String(active.id), newParentId: targetId });
-          router.refresh();
-        } catch (err) {
-          console.error("nestTask failed:", err);
-          router.refresh();
-        }
-      });
-      return;
+      // Nest: become last child of target.
+      newParentId = overId.slice(5);
+      const target = tasks.find((t) => t.id === newParentId);
+      if (!target) return;
+      newQuadrant = target.quadrant as Quadrant;
+    } else if (overId.startsWith("quadrant-")) {
+      // Empty quadrant body: become last top-level in that quadrant.
+      newParentId = null;
+      newQuadrant = Number(overId.slice("quadrant-".length)) as Quadrant;
+      insertAtFrontOfNestTarget = false; // append; same effect as first branch
+    } else {
+      // Drop on (or near) a specific task: become its sibling.
+      const overTask = tasks.find((t) => t.id === overId);
+      if (!overTask) return;
+      newParentId = overTask.parentId;
+      newQuadrant = overTask.quadrant as Quadrant;
     }
 
-    const isSubtask = activeData.parentId !== null;
+    // Build the new sibling group order.
+    const currentSiblings = tasks
+      .filter(
+        (t) =>
+          t.parentId === newParentId &&
+          t.quadrant === newQuadrant &&
+          t.id !== taskId,
+      )
+      .sort(
+        (a, b) =>
+          a.sortOrder - b.sortOrder ||
+          a.createdAt.getTime() - b.createdAt.getTime(),
+      )
+      .map((t) => t.id);
 
-    // ── SUBTASK drag: reparent based on what we dropped near ──────────
-    // Position-wise: the moved subtask lands at the END of its new
-    // sibling group. Fine-grained reorder of subtasks is uncommon
-    // enough that we trade it for simpler logic.
-    if (isSubtask) {
-      let newParentId: string | null = null;
-      let newQuadrant: Quadrant | undefined;
-
-      if (overId.startsWith("quadrant-")) {
-        newQuadrant = Number(overId.slice("quadrant-".length)) as Quadrant;
-        newParentId = null;
+    let newSiblingsOrder: string[];
+    if (overId.startsWith("nest-") || overId.startsWith("quadrant-")) {
+      // Append at end (or front, if we wanted "newest first" for nest).
+      newSiblingsOrder = insertAtFrontOfNestTarget
+        ? [taskId, ...currentSiblings]
+        : [...currentSiblings, taskId];
+    } else {
+      // Drop near a specific task: insert active at that task's index.
+      const overIdx = currentSiblings.indexOf(overId);
+      if (overIdx === -1) {
+        newSiblingsOrder = [...currentSiblings, taskId];
       } else {
-        const overTask = tasks.find((t) => t.id === overId);
-        if (!overTask) return;
-        // Become a sibling of the over task: same parentId, same quadrant.
-        newParentId = overTask.parentId;
-        newQuadrant = overTask.quadrant as Quadrant;
+        newSiblingsOrder = [
+          ...currentSiblings.slice(0, overIdx),
+          taskId,
+          ...currentSiblings.slice(overIdx),
+        ];
       }
-
-      startTransition(async () => {
-        try {
-          await nestTask({
-            childId: String(active.id),
-            newParentId,
-            newQuadrant,
-          });
-          router.refresh();
-        } catch (err) {
-          console.error("nestTask (subtask drag) failed:", err);
-          router.refresh();
-        }
-      });
-      return;
     }
 
-    // ── TOP-LEVEL reorder + cross-quadrant move ───────────────────────
-    if (active.id !== over.id) {
-      const overData = over.data.current as
-        | { type: "task" | "quadrant"; quadrant: Quadrant }
-        | undefined;
-      const targetQ = overData?.quadrant ?? activeData.quadrant;
+    // ── Optimistic local update ───────────────────────────────────────
+    // 1. Move active + cascade quadrant to its descendants
+    // 2. Rewrite sortOrder for the destination sibling group
+    const descendants = collectDescendantsLocal(taskId, tasks);
+    const positionInGroup = new Map(newSiblingsOrder.map((id, i) => [id, i]));
 
-      setTasks((prev) => {
-        const inSameQ =
-          prev.findIndex((t) => t.id === active.id && t.quadrant === targetQ) !== -1 &&
-          prev.findIndex((t) => t.id === over.id && t.quadrant === targetQ) !== -1;
-        if (!inSameQ) return prev;
-        const aIdx = prev.findIndex((t) => t.id === active.id);
-        const oIdx = prev.findIndex((t) => t.id === over.id);
-        if (aIdx === -1 || oIdx === -1) return prev;
-        return arrayMove(prev, aIdx, oIdx);
-      });
-    }
-
-    queueMicrotask(() => {
-      const after: Record<Quadrant, TaskWithTagIds[]> = { 1: [], 2: [], 3: [], 4: [] };
-      for (const t of tasks) if (!t.parentId) after[t.quadrant as Quadrant].push(t);
-      startTransition(async () => {
-        for (const q of [1, 2, 3, 4] as Quadrant[]) {
-          const ids = after[q].map((t) => t.id);
-          if (ids.length === 0) continue;
-          await reorderTasks({ quadrant: q, parentId: null, orderedIds: ids });
+    setTasks((prev) =>
+      prev.map((t) => {
+        if (t.id === taskId) {
+          return {
+            ...t,
+            parentId: newParentId,
+            quadrant: newQuadrant,
+            sortOrder: positionInGroup.get(t.id) ?? t.sortOrder,
+          };
         }
+        if (descendants.has(t.id) && t.quadrant !== newQuadrant) {
+          return { ...t, quadrant: newQuadrant };
+        }
+        const newPos = positionInGroup.get(t.id);
+        if (
+          newPos !== undefined &&
+          t.parentId === newParentId &&
+          t.quadrant === newQuadrant
+        ) {
+          return { ...t, sortOrder: newPos };
+        }
+        return t;
+      }),
+    );
+
+    // ── Server fire-and-forget (refresh only on error to roll back) ──
+    startTransition(async () => {
+      try {
+        await moveTask({
+          taskId,
+          newParentId,
+          newQuadrant,
+          newSiblingsOrder,
+        });
+        // No router.refresh: local state matches server.
+      } catch (err) {
+        console.error("moveTask failed:", err);
+        // Reset to server state on error.
         router.refresh();
-      });
+      }
     });
   };
 
-  // ── Tag manager / edit modal ──────────────────────────────────────────
+  // ── Tag manager / edit modal / inline add ────────────────────────────
   const [tagsOpen, setTagsOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<TaskWithTagIds | null>(null);
-
-  // ── Add task ──────────────────────────────────────────────────────────
   const [adding, setAdding] = useState<Quadrant | null>(null);
   const submitTask = (q: Quadrant) =>
     (input: {
@@ -399,9 +398,8 @@ export function MatrixClient({
       });
     };
 
-  // ── Undo: capture last destructive action so a toast can revert it ───
+  // ── Undo ─────────────────────────────────────────────────────────────
   const [pendingUndo, setPendingUndo] = useState<UndoAction | null>(null);
-
   const handleDelete = (id: string) =>
     startTransition(async () => {
       try {
@@ -444,7 +442,6 @@ export function MatrixClient({
         sensors={sensors}
         collisionDetection={collisionDetection}
         onDragStart={onDragStart}
-        onDragOver={onDragOver}
         onDragEnd={onDragEnd}
       >
         <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-4 gap-2 p-2 md:grid-cols-2 md:grid-rows-2">
@@ -473,7 +470,7 @@ export function MatrixClient({
           ))}
         </div>
 
-        <DragOverlay>
+        <DragOverlay dropAnimation={null}>
           {activeTask && (
             <TaskCard
               task={activeTask}
@@ -522,11 +519,31 @@ export function MatrixClient({
 
 // ════════════════════════════════════════════════════════════════════════════
 
-/**
- * Toast that appears at the bottom of the screen after a destructive
- * action, offering an Undo for ~6 seconds. Click Undo to revert; click
- * the X to dismiss without undoing. Auto-dismisses on timeout.
- */
+function collectDescendantsLocal(
+  rootId: string,
+  tasks: TaskWithTagIds[],
+): Set<string> {
+  const childrenByParent = new Map<string, string[]>();
+  for (const t of tasks) {
+    if (!t.parentId) continue;
+    const list = childrenByParent.get(t.parentId);
+    if (list) list.push(t.id);
+    else childrenByParent.set(t.parentId, [t.id]);
+  }
+  const out = new Set<string>();
+  const stack = [rootId];
+  while (stack.length) {
+    const id = stack.pop()!;
+    for (const c of childrenByParent.get(id) ?? []) {
+      if (!out.has(c)) {
+        out.add(c);
+        stack.push(c);
+      }
+    }
+  }
+  return out;
+}
+
 function UndoToast({
   action,
   onUndo,
@@ -539,7 +556,6 @@ function UndoToast({
   useEffect(() => {
     const handle = setTimeout(onDismiss, 6000);
     return () => clearTimeout(handle);
-    // Restart the timer when a new action arrives.
   }, [action, onDismiss]);
 
   return (
