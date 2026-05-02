@@ -36,42 +36,44 @@
 }
 
 :root {
-  /* Light — warm zinc neutrals, vibrant violet accent. */
-  --bg: #fafaf9;
-  --surface: #ffffff;
+  /* Light — gentle violet-tinted bg makes white cards pop out, vibrant
+     accents (rose for urgent, indigo + orange + violet for the rest). */
+  --bg: #f5f3ff;          /* violet-50 — soft purple tint */
+  --surface: #ffffff;     /* clean white cards stand out against the bg */
   --text: #18181b;
   --text-muted: #52525b;
   --text-subtle: #a1a1aa;
   --border: #e4e4e7;
   --border-strong: #d4d4d8;
   --hover: #f4f4f5;
-  --shadow-sm: 0 1px 2px rgba(24, 24, 27, 0.04);
+  --shadow-sm: 0 1px 2px rgba(24, 24, 27, 0.05);
   --shadow-md: 0 4px 14px rgba(24, 24, 27, 0.10);
-  /* Quadrant accents — pop more than the previous slate/amber set. */
-  --q1-accent: #ef4444;  /* red-500     — urgent + important */
-  --q2-accent: #6366f1;  /* indigo-500  — strategic / important */
-  --q3-accent: #f97316;  /* orange-500  — urgent / delegate */
-  --q4-accent: #a78bfa;  /* violet-400  — eliminate (was gray; still distinct from accent) */
-  --accent:    #8b5cf6;  /* violet-500  — app accent */
+  --q1-accent: #f43f5e;   /* rose-500    — urgent + important */
+  --q2-accent: #6366f1;   /* indigo-500  — strategic */
+  --q3-accent: #f97316;   /* orange-500  — delegate */
+  --q4-accent: #a78bfa;   /* violet-400  — eliminate */
+  --accent:    #7c3aed;   /* violet-600  — deeper for contrast on white */
 }
 
 .dark {
-  /* Dark — purple-tinted instead of cool navy; vibrant softened accents. */
-  --bg: #0c0a14;
-  --surface: #18162b;
+  /* Dark — deep purple-black bg with a *distinctly* lighter surface so
+     cards / form fields / sections actually look like elevated panels
+     instead of disappearing into the background. */
+  --bg: #0d0a1a;          /*  ~5% lightness — deep, ink-like */
+  --surface: #20193b;     /* ~17% lightness — clear separation from bg */
   --text: #e4e4e7;
   --text-muted: #a1a1aa;
   --text-subtle: #71717a;
-  --border: #27243d;
-  --border-strong: #38324f;
-  --hover: #1f1c33;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.5);
-  --q1-accent: #f87171;  /* red-400 — lighter so it pops on dark bg */
-  --q2-accent: #818cf8;  /* indigo-400 */
-  --q3-accent: #fb923c;  /* orange-400 */
-  --q4-accent: #c4b5fd;  /* violet-300 */
-  --accent:    #a78bfa;  /* violet-400 */
+  --border: #3a3266;       /* prominent enough to outline cards */
+  --border-strong: #4f4885;
+  --hover: #2c2552;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.6);
+  --q1-accent: #fb7185;   /* rose-400 lighter for dark */
+  --q2-accent: #818cf8;   /* indigo-400 */
+  --q3-accent: #fb923c;   /* orange-400 */
+  --q4-accent: #c4b5fd;   /* violet-300 */
+  --accent:    #a78bfa;   /* violet-400 */
 }
 
 * { box-sizing: border-box; }

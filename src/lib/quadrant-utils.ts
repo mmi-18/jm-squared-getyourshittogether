@@ -36,22 +36,23 @@ export function effectiveTagColor(
 
 /**
  * Build a CSS gradient for a task card's background tint, given the
- * effective colors of its tags.
+ * effective colors of its tags. Higher alphas than the spec called for
+ * (0.35/0.10 vs 0.22/0.06) — the lower numbers read as "barely tinted"
+ * on the violet-50 bg.
  *
  *  - 0 tags → transparent (caller renders surface color)
- *  - 1 tag  → diagonal gradient from rgba(c, 0.22) to rgba(c, 0.06)
- *  - 2+     → multi-stop diagonal blending each color
+ *  - 1 tag  → diagonal gradient from rgba(c, 0.35) to rgba(c, 0.10)
+ *  - 2+     → multi-stop diagonal blend at 0.30 alpha each
  */
 export function buildTaskTint(colors: string[]): string {
   if (colors.length === 0) return "transparent";
   if (colors.length === 1) {
-    return `linear-gradient(135deg, ${hexToRgba(colors[0], 0.22)}, ${hexToRgba(colors[0], 0.06)})`;
+    return `linear-gradient(135deg, ${hexToRgba(colors[0], 0.35)}, ${hexToRgba(colors[0], 0.10)})`;
   }
-  // Even-stop blend, each color contributing one band of the gradient.
   const stops = colors
     .map((c, i) => {
       const pct = Math.round((i / (colors.length - 1)) * 100);
-      return `${hexToRgba(c, 0.18)} ${pct}%`;
+      return `${hexToRgba(c, 0.30)} ${pct}%`;
     })
     .join(", ");
   return `linear-gradient(135deg, ${stops})`;

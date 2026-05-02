@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useDroppable } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Check, FileText, GripVertical, Pencil, Trash2 } from "lucide-react";
@@ -18,28 +19,26 @@ export type TaskWithTagIds = Task & { tagIds: string[] };
 const MAX_VISIBLE_TAG_BADGES = 3;
 
 /**
- * Single-line draggable + sortable task card.
+ * Single-line draggable + sortable task card with subtask indent +
+ * drag-to-nest support.
  *
- * Layout (left → right):
- *   [☐] | title (truncates) | [In 5d] [Vol] [ITB] [📄] [✏️] [🗑️]
+ * Two dnd-kit hooks:
+ *   - useSortable for reorder. Disabled at depth > 0 — subtasks aren't
+ *     individually draggable (re-parent via the edit modal). Keeps the
+ *     drop logic tractable.
+ *   - useDroppable with id `nest-{task.id}` so this card is also a
+ *     valid nest target for *other* dragged cards. Custom collision
+ *     detection in MatrixClient picks this droppable when the pointer
+ *     is over a card; otherwise sortable wins for gap-based reorder.
  *
- * Card visuals:
- *   - 6px colored bar on the left edge — matches the tag color (single
- *     tag) or vertical gradient of all tag colors (multi-tag).
- *   - Background tint — diagonal gradient fading from the tag color(s)
- *     so the whole card reads as "belonging" to its tag(s) at a glance.
- *     Multi-tag → diagonal blend of all colors fading into each other,
- *     per the spec.
- *
- * Tag badges (right side, after deadline):
- *   - Small rounded rectangles (NOT circles), 3-char uppercase
- *     abbreviation, white text on the tag's color, full name on hover.
- *   - Capped at MAX_VISIBLE_TAG_BADGES with a `+N` overflow chip; the
- *     edit modal lists the full set.
+ * The depth prop drives left margin so subtasks visually nest under
+ * their parent. The 6px colored bar moves with the card (it's left:0
+ * inside a relative parent), giving a stair-step depth indicator.
  */
 export function TaskCard({
   task,
   tagsById,
+  depth = 0,
   disabled,
   onToggle,
   onDelete,
@@ -47,6 +46,7 @@ export function TaskCard({
 }: {
   task: TaskWithTagIds;
   tagsById: Map<string, Tag>;
+  depth?: number;
   disabled: boolean;
   onToggle: () => void;
   onDelete: () => void;
@@ -58,10 +58,22 @@ export function TaskCard({
       type: "task",
       quadrant: task.quadrant,
       parentId: task.parentId,
+      depth,
     },
+    // Subtasks aren't individually draggable. Reorder/move only fires from
+    // the top-level cards; subtasks follow their parent's quadrant.
+    disabled: depth > 0,
   });
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     sortable;
+
+  // Separate droppable so other tasks can be dragged ONTO this one to
+  // nest under it. id is namespaced ("nest-...") so the collision
+  // detector in MatrixClient can tell nest from reorder.
+  const nest = useDroppable({
+    id: `nest-${task.id}`,
+    data: { type: "nest", taskId: task.id },
+  });
 
   const taskTags = task.tagIds
     .map((id) => tagsById.get(id))
@@ -77,29 +89,42 @@ export function TaskCard({
   const visibleTags = taskTags.slice(0, MAX_VISIBLE_TAG_BADGES);
   const overflowCount = taskTags.length - visibleTags.length;
 
+  // Combine the sortable + droppable refs onto the same DOM node.
+  const setRefs = (el: HTMLDivElement | null) => {
+    setNodeRef(el);
+    nest.setNodeRef(el);
+  };
+
   const style: React.CSSProperties = {
     transform: CSS.Translate.toString(transform),
     transition,
     opacity: isDragging ? 0.4 : 1,
     touchAction: "manipulation",
     background: tint !== "transparent" ? tint : undefined,
+    marginLeft: depth * 24,
   };
 
   return (
     <div
-      ref={setNodeRef}
+      ref={setRefs}
       style={style}
       className={cn(
-        // shrink-0: don't let flex squish cards when crowded — body scrolls instead
         "border-border bg-surface group relative flex shrink-0 flex-col overflow-hidden rounded-[6px] border shadow-sm",
         task.completed && "bg-muted/40",
+        // Active nest target — outline + NEST badge below.
+        nest.isOver && !isDragging && "ring-2 ring-[var(--accent)] ring-offset-1",
       )}
     >
-      {/* Colored left bar (6px) */}
       <span
         className="absolute bottom-0 left-0 top-0 w-[6px]"
         style={{ background: bar }}
       />
+
+      {nest.isOver && !isDragging && (
+        <span className="bg-accent pointer-events-none absolute right-1.5 top-1.5 z-10 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white shadow">
+          Nest
+        </span>
+      )}
 
       {/* ── One-line row ─────────────────────────────────────────────── */}
       <div className="flex items-center gap-1.5 py-1.5 pl-3.5 pr-1.5">
@@ -115,19 +140,19 @@ export function TaskCard({
           {task.completed && <Check size={11} strokeWidth={3} />}
         </button>
 
-        {/* Title — drag handle, takes remaining width */}
+        {/* Title — drag handle when depth=0; static for subtasks */}
         <div
-          {...attributes}
-          {...listeners}
+          {...(depth === 0 ? attributes : {})}
+          {...(depth === 0 ? listeners : {})}
           className={cn(
-            "min-w-0 flex-1 cursor-grab truncate text-[13.5px] active:cursor-grabbing",
+            "min-w-0 flex-1 truncate text-[13.5px]",
+            depth === 0 && "cursor-grab active:cursor-grabbing",
             task.completed && "text-muted-foreground line-through",
           )}
         >
           {task.title}
         </div>
 
-        {/* Deadline pill */}
         {dl && (
           <span
             className={cn(
@@ -141,7 +166,6 @@ export function TaskCard({
           </span>
         )}
 
-        {/* Tag badges — right of deadline, before actions */}
         {visibleTags.length > 0 && (
           <div className="flex flex-shrink-0 items-center gap-1" aria-label="Tags">
             {visibleTags.map((tag) => (
@@ -165,7 +189,6 @@ export function TaskCard({
           </div>
         )}
 
-        {/* Notes icon (only when the task has notes) */}
         {hasNotes && (
           <button
             onClick={() => setNotesOpen((v) => !v)}
@@ -179,18 +202,17 @@ export function TaskCard({
           </button>
         )}
 
-        {/* Drag handle — wired to dnd-kit listeners so dragging from
-            this icon actually moves the card (was previously a visual-only
-            affordance). The title above is also a drag handle; the grip
-            is the desktop-hover-discoverable alternative. */}
-        <span
-          {...listeners}
-          role="button"
-          aria-label="Drag to reorder or move"
-          className="text-subtle hover:text-foreground hidden h-6 w-4 flex-shrink-0 cursor-grab items-center justify-center rounded active:cursor-grabbing group-hover:flex"
-        >
-          <GripVertical size={12} />
-        </span>
+        {/* Drag handle (top-level only) — wired to dnd-kit listeners */}
+        {depth === 0 && (
+          <span
+            {...listeners}
+            role="button"
+            aria-label="Drag to reorder, move, or nest"
+            className="text-subtle hover:text-foreground hidden h-6 w-4 flex-shrink-0 cursor-grab items-center justify-center rounded active:cursor-grabbing group-hover:flex"
+          >
+            <GripVertical size={12} />
+          </span>
+        )}
 
         {onEdit && (
           <button
@@ -213,7 +235,6 @@ export function TaskCard({
         </button>
       </div>
 
-      {/* ── Expanded notes ────────────────────────────────────────────── */}
       {notesOpen && hasNotes && (
         <div className="border-border bg-muted/70 whitespace-pre-wrap border-t px-3 py-2 text-[12px]">
           {task.notes}
@@ -223,11 +244,6 @@ export function TaskCard({
   );
 }
 
-/**
- * Small rectangular tag badge with rounded corners (deliberately NOT a
- * circle — that read as a generic dot earlier; rectangles look like
- * labeled chips). 3-char uppercase abbreviation; full name on hover.
- */
 function TagBadge({ tag, color }: { tag: Tag; color: string }) {
   const abbrev = tag.name.trim().slice(0, 3).toUpperCase() || "•";
   return (

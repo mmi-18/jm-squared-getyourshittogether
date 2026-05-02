@@ -187,6 +187,91 @@ export async function moveTaskToQuadrant(id: string, quadrant: Quadrant) {
 }
 
 /**
+ * Drag-to-nest: set `parentId` of `childId` to `newParentId`. Cycle
+ * prevention checks both that the new parent isn't the child itself and
+ * that it isn't a descendant of the child. The child's quadrant (and
+ * the entire descendant subtree) snaps to the new parent's quadrant —
+ * subtasks always live in the same quadrant as their parent.
+ *
+ * `newParentId === null` un-nests, making the child a top-level task in
+ * its current quadrant.
+ */
+export async function nestTask(input: {
+  childId: string;
+  newParentId: string | null;
+}) {
+  const user = await requireUser();
+
+  const child = await db.task.findFirst({
+    where: { id: input.childId, userId: user.id, deletedAt: null },
+    select: { id: true, parentId: true, quadrant: true },
+  });
+  if (!child) throw new Error("Task not found");
+
+  if (input.newParentId) {
+    if (input.newParentId === input.childId) {
+      throw new Error("Can't nest a task into itself");
+    }
+    const newParent = await db.task.findFirst({
+      where: {
+        id: input.newParentId,
+        userId: user.id,
+        deletedAt: null,
+      },
+      select: { id: true, quadrant: true },
+    });
+    if (!newParent) throw new Error("New parent not found");
+
+    const descendants = await collectDescendants(input.childId, user.id);
+    if (descendants.includes(input.newParentId)) {
+      throw new Error("Can't nest into a descendant");
+    }
+
+    // Place at the end of newParent's children list.
+    const last = await db.task.findFirst({
+      where: {
+        parentId: input.newParentId,
+        userId: user.id,
+        deletedAt: null,
+      },
+      orderBy: { sortOrder: "desc" },
+      select: { sortOrder: true },
+    });
+    const sortOrder = (last?.sortOrder ?? -1) + 1;
+
+    await db.$transaction([
+      // Cascade quadrant to the entire subtree.
+      db.task.updateMany({
+        where: { id: { in: [input.childId, ...descendants] } },
+        data: { quadrant: newParent.quadrant },
+      }),
+      // Re-parent.
+      db.task.update({
+        where: { id: input.childId },
+        data: { parentId: input.newParentId, sortOrder },
+      }),
+    ]);
+  } else {
+    // Un-nest: become top-level in current quadrant, at end of list.
+    const last = await db.task.findFirst({
+      where: {
+        userId: user.id,
+        quadrant: child.quadrant,
+        parentId: null,
+        deletedAt: null,
+      },
+      orderBy: { sortOrder: "desc" },
+      select: { sortOrder: true },
+    });
+    await db.task.update({
+      where: { id: input.childId },
+      data: { parentId: null, sortOrder: (last?.sortOrder ?? -1) + 1 },
+    });
+  }
+  revalidate();
+}
+
+/**
  * Reorder tasks within a quadrant (and optional parent — for subtasks).
  * Pass the new ordered list of IDs; we rewrite their `sortOrder` to match
  * the array index. The DnD layer constructs this array from the post-drag

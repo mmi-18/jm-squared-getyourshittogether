@@ -13,12 +13,17 @@ import { QUADRANT_ACCENT } from "@/lib/quadrant-utils";
 import { TaskCard, type TaskWithTagIds } from "./TaskCard";
 import { InlineTaskForm } from "./InlineTaskForm";
 
+export type RenderedTask = TaskWithTagIds & { depth: number };
+
 /**
  * One quadrant of the 2×2 matrix.
  *
- * Wrapped in a SortableContext so @dnd-kit can reorder tasks within it. The
- * panel itself is also a `useDroppable` so empty quadrants accept drops
- * (otherwise an empty SortableContext has no hit area).
+ * Receives an ordered, depth-annotated list of tasks (built by
+ * MatrixClient via depth-first traversal of the parent→child tree).
+ * Top-level tasks render first, subtasks indented below their parents.
+ * The whole list is one SortableContext so dnd-kit picks up gap-based
+ * reorder; subtasks themselves are non-draggable (TaskCard disables
+ * useSortable when depth > 0).
  */
 export function QuadrantPanel({
   quadrant,
@@ -35,7 +40,7 @@ export function QuadrantPanel({
   onEditTask,
 }: {
   quadrant: Quadrant;
-  tasks: TaskWithTagIds[];
+  tasks: RenderedTask[];
   tags: Tag[];
   tagsById: Map<string, Tag>;
   pending: boolean;
@@ -58,6 +63,7 @@ export function QuadrantPanel({
     data: { type: "quadrant", quadrant },
   });
 
+  // Sortable items must be in their visual rendered order.
   const taskIds = tasks.map((t) => t.id);
 
   return (
@@ -118,6 +124,7 @@ export function QuadrantPanel({
             <TaskCard
               key={task.id}
               task={task}
+              depth={task.depth}
               tagsById={tagsById}
               disabled={pending}
               onToggle={() => onToggleTask(task.id)}

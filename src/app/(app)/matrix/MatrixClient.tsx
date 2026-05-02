@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   DndContext,
@@ -8,8 +8,10 @@ import {
   PointerSensor,
   TouchSensor,
   closestCenter,
+  pointerWithin,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
@@ -24,11 +26,12 @@ import { passesDeadlineFilter } from "@/lib/quadrant-utils";
 import {
   createTask,
   deleteTask,
+  nestTask,
   reorderTasks,
   toggleTaskCompleted,
 } from "../_actions/tasks";
 import { updateUserFilters } from "../_actions/settings";
-import { QuadrantPanel } from "@/components/matrix/QuadrantPanel";
+import { QuadrantPanel, type RenderedTask } from "@/components/matrix/QuadrantPanel";
 import { Header, applyTheme } from "@/components/matrix/Header";
 import { FilterStrip } from "@/components/matrix/FilterStrip";
 import { TagManagerModal } from "@/components/matrix/TagManagerModal";
@@ -51,20 +54,20 @@ export function MatrixClient({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
 
-  // ── Filter state — local + debounced server sync ──────────────────────
+  // ── Filter state — local + debounced server sync ─────────────────────
   const [filters, setFilters] = useState<FilterState>(initialFilters);
-  const lastServerSync = useRef(JSON.stringify(initialFilters));
+  const [lastServerSync, setLastServerSync] = useState(JSON.stringify(initialFilters));
   useEffect(() => {
     const ser = JSON.stringify(filters);
-    if (ser === lastServerSync.current) return;
+    if (ser === lastServerSync) return;
     const handle = setTimeout(() => {
-      lastServerSync.current = ser;
+      setLastServerSync(ser);
       void updateUserFilters(filters);
     }, 600);
     return () => clearTimeout(handle);
-  }, [filters]);
+  }, [filters, lastServerSync]);
 
-  // ── Theme: apply on mount, react to system pref changes if theme=system ─
+  // ── Theme ─────────────────────────────────────────────────────────────
   useEffect(() => {
     applyTheme(initialTheme);
     if (initialTheme !== "system") return;
@@ -74,13 +77,9 @@ export function MatrixClient({
     return () => mq.removeEventListener?.("change", onChange);
   }, [initialTheme]);
 
-  // ── Tasks state — optimistic copy of server-rendered initialTasks ─────
-  // We keep a local mirror so DnD can update positions instantly; server
-  // actions write through, and revalidatePath() then passes a new
-  // initialTasks reference. We re-sync via the React 19 "adjust state
-  // when a prop changes" pattern (compare prev prop tracked in another
-  // useState, conditionally call setState during render — cheaper than
-  // an effect, lint-clean since refs aren't involved).
+  // ── Tasks state — optimistic mirror of server-rendered initialTasks ──
+  // Re-sync when the server prop changes (after revalidatePath()) using
+  // the React 19 "adjust state when a prop changes" pattern.
   const [tasks, setTasks] = useState(initialTasks);
   const [prevInitialTasks, setPrevInitialTasks] = useState(initialTasks);
   if (prevInitialTasks !== initialTasks) {
@@ -94,39 +93,71 @@ export function MatrixClient({
     return m;
   }, [initialTags]);
 
-  // ── Filtered, grouped-by-quadrant view ────────────────────────────────
+  // ── Build the depth-annotated, ordered task list per quadrant ────────
+  // Filter applies to top-level tasks; their entire subtree comes along
+  // for the ride (showing subtasks of a hidden parent would be confusing).
   const filteredByQuadrant = useMemo(() => {
-    // Pre-compute the descendant ID set for each *selected* tag so a parent
-    // tag filter matches tasks tagged with any descendant.
     const matchSet = new Set<string>();
     for (const id of filters.selectedTagIds) {
-      const desc = descendantTagIds(id, initialTags);
-      desc.forEach((d) => matchSet.add(d));
+      descendantTagIds(id, initialTags).forEach((d) => matchSet.add(d));
     }
 
     const passes = (t: TaskWithTagIds) => {
-      if (t.parentId) return false; // top-level only for now
       if (!filters.showCompleted && t.completed) return false;
       if (!passesDeadlineFilter(t.deadline, filters.deadlineFilter)) return false;
       if (filters.selectedTagIds.length === 0) return true;
       return t.tagIds.some((id) => matchSet.has(id));
     };
 
-    const map: Record<Quadrant, TaskWithTagIds[]> = { 1: [], 2: [], 3: [], 4: [] };
-    for (const t of tasks) if (passes(t)) map[t.quadrant as Quadrant].push(t);
-    // Already ordered by sortOrder from the server query.
+    // Index children by parent for the recursive build.
+    const childrenByParent = new Map<string, TaskWithTagIds[]>();
+    for (const t of tasks) {
+      if (!t.parentId) continue;
+      const list = childrenByParent.get(t.parentId);
+      if (list) list.push(t);
+      else childrenByParent.set(t.parentId, [t]);
+    }
+    for (const list of childrenByParent.values()) {
+      list.sort(
+        (a, b) =>
+          a.sortOrder - b.sortOrder ||
+          a.createdAt.getTime() - b.createdAt.getTime(),
+      );
+    }
+
+    const map: Record<Quadrant, RenderedTask[]> = { 1: [], 2: [], 3: [], 4: [] };
+
+    const append = (
+      task: TaskWithTagIds,
+      depth: number,
+      into: RenderedTask[],
+    ) => {
+      into.push({ ...task, depth });
+      for (const child of childrenByParent.get(task.id) ?? []) {
+        append(child, depth + 1, into);
+      }
+    };
+
+    // Top-level passing tasks bring their subtrees with them.
+    const topLevel = tasks
+      .filter((t) => !t.parentId && passes(t))
+      .sort(
+        (a, b) =>
+          a.sortOrder - b.sortOrder ||
+          a.createdAt.getTime() - b.createdAt.getTime(),
+      );
+    for (const t of topLevel) append(t, 0, map[t.quadrant as Quadrant]);
     return map;
   }, [tasks, filters, initialTags]);
 
-  // Counts for the filter chips — count tasks (top-level only) that
-  // include each tag *or any of its descendants*.
+  // Counts per tag — counts tasks (top-level + subtasks) tagged with the
+  // tag *or any of its descendants*.
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const tag of initialTags) {
       const desc = descendantTagIds(tag.id, initialTags);
       let c = 0;
       for (const t of tasks) {
-        if (t.parentId) continue;
         if (t.tagIds.some((id) => desc.has(id))) c++;
       }
       counts.set(tag.id, c);
@@ -134,15 +165,9 @@ export function MatrixClient({
     return counts;
   }, [initialTags, tasks]);
 
-  // ── DnD setup ─────────────────────────────────────────────────────────
+  // ── DnD sensors ──────────────────────────────────────────────────────
   const sensors = useSensors(
-    // PointerSensor handles mouse + pen. activationConstraint.distance
-    // means a 5px drag is required before drag starts — prevents
-    // click-as-drag on accidental single-click.
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    // TouchSensor on mobile. delay+tolerance prevents scroll/drag conflicts:
-    // hold for 200ms to start a drag, but if the finger moves <5px in
-    // that time it's still treated as a tap.
     useSensor(TouchSensor, {
       activationConstraint: { delay: 200, tolerance: 5 },
     }),
@@ -153,14 +178,57 @@ export function MatrixClient({
   const activeTask =
     activeId ? tasks.find((t) => t.id === activeId) ?? null : null;
 
-  const onDragStart = (e: DragStartEvent) => {
-    setActiveId(String(e.active.id));
+  // Pre-compute the active task's descendants (cycle-prevention for
+  // drag-to-nest). Recomputed when tasks change; cheap.
+  const activeDescendants = useMemo(() => {
+    if (!activeId) return new Set<string>();
+    const childrenByParent = new Map<string, string[]>();
+    for (const t of tasks) {
+      if (!t.parentId) continue;
+      const list = childrenByParent.get(t.parentId);
+      if (list) list.push(t.id);
+      else childrenByParent.set(t.parentId, [t.id]);
+    }
+    const out = new Set<string>();
+    const stack = [activeId];
+    while (stack.length) {
+      const id = stack.pop()!;
+      for (const c of childrenByParent.get(id) ?? []) {
+        if (!out.has(c)) {
+          out.add(c);
+          stack.push(c);
+        }
+      }
+    }
+    return out;
+  }, [activeId, tasks]);
+
+  /**
+   * Custom collision detector: pointer-within wins for nest droppables
+   * (so dropping ON a card nests under it). Self + descendants are
+   * skipped to prevent cycles. Falls back to closestCenter for the
+   * sortable / quadrant droppables (gap-based reorder + cross-quadrant).
+   */
+  const collisionDetection: CollisionDetection = (args) => {
+    const pointerCollisions = pointerWithin(args);
+    const nestHit = pointerCollisions.find((c) => {
+      const cid = String(c.id);
+      if (!cid.startsWith("nest-")) return false;
+      const taskId = cid.slice(5);
+      if (taskId === activeId) return false;
+      if (activeDescendants.has(taskId)) return false;
+      return true;
+    });
+    if (nestHit) return [nestHit];
+    return closestCenter(args);
   };
+
+  const onDragStart = (e: DragStartEvent) => setActiveId(String(e.active.id));
 
   /**
    * As the user drags across containers, mirror the move locally so the
-   * source quadrant doesn't leave a gap and the dest quadrant shows the
-   * card live. Server write happens once, on drag end.
+   * source quadrant doesn't leave a gap. Only relevant for top-level
+   * tasks (depth=0) since subtasks are non-draggable.
    */
   const onDragOver = (e: DragOverEvent) => {
     const { active, over } = e;
@@ -169,28 +237,24 @@ export function MatrixClient({
       | { type: "task"; quadrant: Quadrant; parentId: string | null }
       | undefined;
     const overData = over.data.current as
-      | { type: "task" | "quadrant"; quadrant: Quadrant }
+      | { type: "task" | "quadrant" | "nest"; quadrant?: Quadrant }
       | undefined;
     if (!activeData || !overData) return;
+    if (overData.type === "nest") return; // hovering for nest, no reorder mirror
 
     const sourceQ = activeData.quadrant;
     const targetQ = overData.quadrant;
-    if (sourceQ === targetQ) return;
+    if (!targetQ || sourceQ === targetQ) return;
 
     setTasks((prev) => {
       const idx = prev.findIndex((t) => t.id === active.id);
       if (idx === -1) return prev;
       const moved = { ...prev[idx], quadrant: targetQ as Quadrant };
       const without = [...prev.slice(0, idx), ...prev.slice(idx + 1)];
-      // Insert at the position of the over task within target, or at the end.
       if (overData.type === "task") {
         const overIdx = without.findIndex((t) => t.id === over.id);
         if (overIdx === -1) return [...without, moved];
-        return [
-          ...without.slice(0, overIdx),
-          moved,
-          ...without.slice(overIdx),
-        ];
+        return [...without.slice(0, overIdx), moved, ...without.slice(overIdx)];
       }
       return [...without, moved];
     });
@@ -201,17 +265,29 @@ export function MatrixClient({
     setActiveId(null);
     if (!over) return;
 
-    // Compute the post-drag, top-level (parentId=null), per-quadrant order
-    // from our local state and ship it to the server. We do one
-    // reorderTasks per affected quadrant. It's also fine to send the
-    // unaffected quadrants — the server happily no-ops.
+    const overId = String(over.id);
+
+    // ── NEST: dropped on another card's nest droppable ────────────────
+    if (overId.startsWith("nest-")) {
+      const targetId = overId.slice(5);
+      startTransition(async () => {
+        try {
+          await nestTask({ childId: String(active.id), newParentId: targetId });
+          router.refresh();
+        } catch (err) {
+          console.error("nestTask failed:", err);
+          router.refresh();
+        }
+      });
+      return;
+    }
+
+    // ── REORDER + cross-quadrant move ─────────────────────────────────
     const activeData = active.data.current as
       | { type: "task"; quadrant: Quadrant; parentId: string | null }
       | undefined;
     if (!activeData) return;
 
-    // Local same-quadrant reorder via arrayMove (so the optimistic state
-    // matches what we'll write).
     if (active.id !== over.id) {
       const overData = over.data.current as
         | { type: "task" | "quadrant"; quadrant: Quadrant }
@@ -222,7 +298,7 @@ export function MatrixClient({
         const inSameQ =
           prev.findIndex((t) => t.id === active.id && t.quadrant === targetQ) !== -1 &&
           prev.findIndex((t) => t.id === over.id && t.quadrant === targetQ) !== -1;
-        if (!inSameQ) return prev; // already moved by onDragOver
+        if (!inSameQ) return prev;
         const aIdx = prev.findIndex((t) => t.id === active.id);
         const oIdx = prev.findIndex((t) => t.id === over.id);
         if (aIdx === -1 || oIdx === -1) return prev;
@@ -230,32 +306,18 @@ export function MatrixClient({
       });
     }
 
-    // Defer to the next microtask so the setTasks above commits before we read.
     queueMicrotask(() => {
-      const after = tasksByQuadrantTopLevel();
-      // Only ship quadrants that actually contain the dragged task (source
-      // and dest). We'll detect them by scanning current state for the
-      // active id and the previous source — easier: just send all four.
+      const after: Record<Quadrant, TaskWithTagIds[]> = { 1: [], 2: [], 3: [], 4: [] };
+      for (const t of tasks) if (!t.parentId) after[t.quadrant as Quadrant].push(t);
       startTransition(async () => {
         for (const q of [1, 2, 3, 4] as Quadrant[]) {
           const ids = after[q].map((t) => t.id);
           if (ids.length === 0) continue;
-          await reorderTasks({
-            quadrant: q,
-            parentId: null,
-            orderedIds: ids,
-          });
+          await reorderTasks({ quadrant: q, parentId: null, orderedIds: ids });
         }
         router.refresh();
       });
     });
-  };
-
-  /** Helper: read the current top-level grouping. */
-  const tasksByQuadrantTopLevel = (): Record<Quadrant, TaskWithTagIds[]> => {
-    const map: Record<Quadrant, TaskWithTagIds[]> = { 1: [], 2: [], 3: [], 4: [] };
-    for (const t of tasks) if (!t.parentId) map[t.quadrant as Quadrant].push(t);
-    return map;
   };
 
   // ── Tag manager modal ─────────────────────────────────────────────────
@@ -300,7 +362,7 @@ export function MatrixClient({
 
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCenter}
+        collisionDetection={collisionDetection}
         onDragStart={onDragStart}
         onDragOver={onDragOver}
         onDragEnd={onDragEnd}

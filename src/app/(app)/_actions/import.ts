@@ -132,18 +132,26 @@ export async function importFromArtifact(input: {
   };
   const flatTasks: FlatTask[] = [];
 
+  // Subtasks should live in the same quadrant as their parent. The
+  // artifact stores subtasks with `quadrant: 4` by default (since
+  // `ensureTaskShape` sets that fallback), but the rendering relies on
+  // them being in the parent's quadrant. Pass `parentQuadrant` down so
+  // each subtask inherits if it doesn't have a valid quadrant of its own.
   const walkTasks = (
     list: ArtifactTask[],
     parentNewId: string | null,
+    parentQuadrant: number,
     siblingIdx: number,
   ): number => {
     let order = siblingIdx;
     for (const t of list) {
       if (!t || typeof t !== "object") continue;
       const title = typeof t.title === "string" ? t.title.trim() : "";
-      const quad = typeof t.quadrant === "number" ? t.quadrant : 4;
       if (!title) continue;
-      if (![1, 2, 3, 4].includes(quad)) continue;
+      const ownQuad =
+        typeof t.quadrant === "number" && [1, 2, 3, 4].includes(t.quadrant)
+          ? t.quadrant
+          : parentQuadrant;
 
       const newId = cuidLike();
       const oldTagIds = Array.isArray(t.tagIds)
@@ -163,19 +171,27 @@ export async function importFromArtifact(input: {
         parentId: parentNewId,
         title,
         notes: typeof t.notes === "string" ? t.notes : "",
-        quadrant: quad,
+        // Subtasks inherit the parent's quadrant. For top-level imports
+        // (parentNewId=null), use the task's own valid quadrant or
+        // default to 4.
+        quadrant: parentNewId ? parentQuadrant : ownQuad,
         completed: t.completed === true,
         deadline,
         sortOrder: order++,
         tagIds: mappedTagIds,
       });
       if (Array.isArray(t.subtasks) && t.subtasks.length) {
-        walkTasks(t.subtasks as ArtifactTask[], newId, 0);
+        walkTasks(
+          t.subtasks as ArtifactTask[],
+          newId,
+          parentNewId ? parentQuadrant : ownQuad,
+          0,
+        );
       }
     }
     return order;
   };
-  walkTasks(rawTasks, null, 0);
+  walkTasks(rawTasks, null, 4, 0);
 
   // ── Write everything in one transaction ───────────────────────────────
   await db.$transaction(async (tx) => {
