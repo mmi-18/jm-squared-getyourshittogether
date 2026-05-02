@@ -6,26 +6,36 @@ import { CSS } from "@dnd-kit/utilities";
 import { Check, FileText, GripVertical, Pencil, Trash2 } from "lucide-react";
 import type { Tag, Task } from "@prisma/client";
 import { cn } from "@/lib/utils";
-import { effectiveTagColor, formatDeadline } from "@/lib/quadrant-utils";
+import {
+  buildTaskBar,
+  buildTaskTint,
+  effectiveTagColor,
+  formatDeadline,
+} from "@/lib/quadrant-utils";
 
 export type TaskWithTagIds = Task & { tagIds: string[] };
 
-const MAX_VISIBLE_TAG_DOTS = 3;
+const MAX_VISIBLE_TAG_BADGES = 3;
 
 /**
  * Single-line draggable + sortable task card.
  *
  * Layout (left → right):
- *   [☐] [●W] [●A] [+2] | title (truncates) | [In 5d] [📄] [✏️] [🗑️]
+ *   [☐] | title (truncates) | [In 5d] [Vol] [ITB] [📄] [✏️] [🗑️]
  *
- * Tags render as small colored circles with the tag's first letter in
- * white. Cap visible dots at MAX_VISIBLE_TAG_DOTS so a tag-heavy task
- * still fits one line on a phone — extras roll up into a `+N` chip
- * (the full set is always visible in the edit modal).
+ * Card visuals:
+ *   - 6px colored bar on the left edge — matches the tag color (single
+ *     tag) or vertical gradient of all tag colors (multi-tag).
+ *   - Background tint — diagonal gradient fading from the tag color(s)
+ *     so the whole card reads as "belonging" to its tag(s) at a glance.
+ *     Multi-tag → diagonal blend of all colors fading into each other,
+ *     per the spec.
  *
- * The title is the drag handle. Touch sensors on the parent DndContext
- * apply a 200ms long-press delay so taps to check off / open the
- * edit modal don't accidentally start a drag.
+ * Tag badges (right side, after deadline):
+ *   - Small rounded rectangles (NOT circles), 3-char uppercase
+ *     abbreviation, white text on the tag's color, full name on hover.
+ *   - Capped at MAX_VISIBLE_TAG_BADGES with a `+N` overflow chip; the
+ *     edit modal lists the full set.
  */
 export function TaskCard({
   task,
@@ -56,12 +66,15 @@ export function TaskCard({
   const taskTags = task.tagIds
     .map((id) => tagsById.get(id))
     .filter((t): t is Tag => Boolean(t));
+  const colors = taskTags.map((t) => effectiveTagColor(t, tagsById));
+  const tint = buildTaskTint(colors);
+  const bar = buildTaskBar(colors);
   const dl = task.deadline ? formatDeadline(task.deadline) : null;
 
   const [notesOpen, setNotesOpen] = useState(false);
   const hasNotes = task.notes.trim().length > 0;
 
-  const visibleTags = taskTags.slice(0, MAX_VISIBLE_TAG_DOTS);
+  const visibleTags = taskTags.slice(0, MAX_VISIBLE_TAG_BADGES);
   const overflowCount = taskTags.length - visibleTags.length;
 
   const style: React.CSSProperties = {
@@ -69,6 +82,7 @@ export function TaskCard({
     transition,
     opacity: isDragging ? 0.4 : 1,
     touchAction: "manipulation",
+    background: tint !== "transparent" ? tint : undefined,
   };
 
   return (
@@ -76,41 +90,30 @@ export function TaskCard({
       ref={setNodeRef}
       style={style}
       className={cn(
-        // shrink-0 so flex column doesn't squish cards when crowded
+        // shrink-0: don't let flex squish cards when crowded — body scrolls instead
         "border-border bg-surface group relative flex shrink-0 flex-col overflow-hidden rounded-[6px] border shadow-sm",
         task.completed && "bg-muted/40",
       )}
     >
+      {/* Colored left bar (6px) */}
+      <span
+        className="absolute bottom-0 left-0 top-0 w-[6px]"
+        style={{ background: bar }}
+      />
+
       {/* ── One-line row ─────────────────────────────────────────────── */}
-      <div className="flex items-center gap-1.5 py-1.5 pl-2 pr-1.5">
+      <div className="flex items-center gap-1.5 py-1.5 pl-3.5 pr-1.5">
         <button
           onClick={onToggle}
           disabled={disabled}
           aria-label={task.completed ? "Mark incomplete" : "Mark complete"}
           className={cn(
-            "border-border-strong flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[4px] border transition-colors",
-            task.completed ? "border-emerald-500 bg-emerald-500 text-white" : "bg-white",
+            "border-border-strong flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[4px] border bg-white transition-colors",
+            task.completed && "border-emerald-500 bg-emerald-500 text-white",
           )}
         >
           {task.completed && <Check size={11} strokeWidth={3} />}
         </button>
-
-        {/* Tag dots — colored circle + first letter */}
-        {visibleTags.length > 0 && (
-          <div className="flex flex-shrink-0 items-center gap-0.5" aria-label="Tags">
-            {visibleTags.map((tag) => (
-              <TagDot key={tag.id} tag={tag} color={effectiveTagColor(tag, tagsById)} />
-            ))}
-            {overflowCount > 0 && (
-              <span
-                className="bg-muted text-muted-foreground inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[9.5px] font-semibold ring-1 ring-black/10"
-                title={taskTags.slice(MAX_VISIBLE_TAG_DOTS).map((t) => t.name).join(", ")}
-              >
-                +{overflowCount}
-              </span>
-            )}
-          </div>
-        )}
 
         {/* Title — drag handle, takes remaining width */}
         <div
@@ -131,20 +134,44 @@ export function TaskCard({
               "inline-flex flex-shrink-0 items-center rounded-[4px] px-1.5 py-px text-[10.5px] font-medium",
               dl.tone === "overdue" && "bg-red-100 text-red-700",
               dl.tone === "soon" && "bg-amber-100 text-amber-800",
-              dl.tone === "default" && "bg-muted text-muted-foreground",
+              dl.tone === "default" && "bg-white/70 text-muted-foreground",
             )}
           >
             {dl.label}
           </span>
         )}
 
-        {/* Notes toggle (only if the task has notes) */}
+        {/* Tag badges — right of deadline, before actions */}
+        {visibleTags.length > 0 && (
+          <div className="flex flex-shrink-0 items-center gap-1" aria-label="Tags">
+            {visibleTags.map((tag) => (
+              <TagBadge
+                key={tag.id}
+                tag={tag}
+                color={effectiveTagColor(tag, tagsById)}
+              />
+            ))}
+            {overflowCount > 0 && (
+              <span
+                className="bg-white/85 text-muted-foreground inline-flex h-[18px] min-w-[20px] items-center justify-center rounded-[4px] px-1 text-[9.5px] font-semibold ring-1 ring-black/10"
+                title={taskTags
+                  .slice(MAX_VISIBLE_TAG_BADGES)
+                  .map((t) => t.name)
+                  .join(", ")}
+              >
+                +{overflowCount}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Notes icon (only when the task has notes) */}
         {hasNotes && (
           <button
             onClick={() => setNotesOpen((v) => !v)}
             aria-label={notesOpen ? "Collapse notes" : "Expand notes"}
             className={cn(
-              "text-muted-foreground hover:text-foreground hover:bg-muted flex h-6 w-6 flex-shrink-0 items-center justify-center rounded",
+              "text-muted-foreground hover:text-foreground hover:bg-muted/80 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded",
               notesOpen && "text-foreground bg-muted",
             )}
           >
@@ -165,7 +192,7 @@ export function TaskCard({
           <button
             onClick={onEdit}
             disabled={disabled}
-            className="text-muted-foreground hover:text-foreground hover:bg-muted flex h-6 w-6 flex-shrink-0 items-center justify-center rounded"
+            className="text-muted-foreground hover:text-foreground hover:bg-muted/80 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded"
             aria-label="Edit task"
           >
             <Pencil size={13} />
@@ -175,16 +202,16 @@ export function TaskCard({
         <button
           onClick={onDelete}
           disabled={disabled}
-          className="text-muted-foreground hover:text-foreground hover:bg-muted flex h-6 w-6 flex-shrink-0 items-center justify-center rounded"
+          className="text-muted-foreground hover:text-foreground hover:bg-muted/80 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded"
           aria-label="Delete task"
         >
           <Trash2 size={13} />
         </button>
       </div>
 
-      {/* ── Expanded notes (separate row) ────────────────────────────── */}
+      {/* ── Expanded notes ────────────────────────────────────────────── */}
       {notesOpen && hasNotes && (
-        <div className="border-border bg-muted/60 whitespace-pre-wrap border-t px-3 py-2 text-[12px]">
+        <div className="border-border bg-muted/70 whitespace-pre-wrap border-t px-3 py-2 text-[12px]">
           {task.notes}
         </div>
       )}
@@ -193,21 +220,20 @@ export function TaskCard({
 }
 
 /**
- * One tag rendered as a small colored circle with the tag's first letter
- * in white. `title` attribute gives a hover tooltip on desktop with the
- * full tag name; the edit modal still lists tags by full name for the
- * mobile case where hover doesn't exist.
+ * Small rectangular tag badge with rounded corners (deliberately NOT a
+ * circle — that read as a generic dot earlier; rectangles look like
+ * labeled chips). 3-char uppercase abbreviation; full name on hover.
  */
-function TagDot({ tag, color }: { tag: Tag; color: string }) {
-  const initial = (tag.name.trim()[0] ?? "·").toUpperCase();
+function TagBadge({ tag, color }: { tag: Tag; color: string }) {
+  const abbrev = tag.name.trim().slice(0, 3).toUpperCase() || "•";
   return (
     <span
-      className="inline-flex h-[18px] w-[18px] flex-shrink-0 items-center justify-center rounded-full text-[9.5px] font-bold leading-none text-white shadow-sm ring-1 ring-black/10"
+      className="inline-flex h-[18px] flex-shrink-0 items-center justify-center rounded-[4px] px-1.5 text-[9.5px] font-bold uppercase leading-none text-white shadow-sm ring-1 ring-black/5"
       style={{ background: color }}
       title={tag.name}
       aria-label={tag.name}
     >
-      {initial}
+      {abbrev}
     </span>
   );
 }
