@@ -5,10 +5,11 @@ import { useRouter } from "next/navigation";
 import {
   DndContext,
   KeyboardSensor,
-  PointerSensor,
+  MouseSensor,
   TouchSensor,
   closestCenter,
   pointerWithin,
+  useDroppable,
   useSensor,
   useSensors,
   type CollisionDetection,
@@ -20,9 +21,10 @@ import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { Undo2, X as XIcon } from "lucide-react";
 import type { Tag } from "@prisma/client";
 import { Theme } from "@prisma/client";
-import { type FilterState, type Quadrant } from "@/lib/types";
+import { type FilterState, type Quadrant, QUADRANTS } from "@/lib/types";
 import { descendantTagIds } from "@/lib/tag-utils";
-import { passesDeadlineFilter } from "@/lib/quadrant-utils";
+import { passesDeadlineFilter, QUADRANT_ACCENT } from "@/lib/quadrant-utils";
+import { cn } from "@/lib/utils";
 import {
   createTask,
   deleteTask,
@@ -196,10 +198,19 @@ export function MatrixClient({
   }, [initialTags, tasks]);
 
   // ── DnD ──────────────────────────────────────────────────────────────
+  // Split sensors so touch and mouse don't fight each other. The previous
+  // PointerSensor activated on 5px of movement *regardless of input type*,
+  // which meant a swipe-to-scroll on touch devices triggered a drag before
+  // the TouchSensor's long-press timer ever ran. MouseSensor only listens
+  // to mouse events; TouchSensor only to touch events; no overlap.
+  //
+  // 250ms delay + 8px tolerance on touch is the "long-press to drag"
+  // threshold: any swipe finger-motion within those 250ms cancels the
+  // drag and returns control to the browser's native scroll.
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
     useSensor(TouchSensor, {
-      activationConstraint: { delay: 200, tolerance: 5 },
+      activationConstraint: { delay: 250, tolerance: 8 },
     }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
@@ -217,6 +228,12 @@ export function MatrixClient({
 
   const collisionDetection: CollisionDetection = (args) => {
     const pointerCollisions = pointerWithin(args);
+    // Mobile quadrant tab drop targets take priority — drop on a tab
+    // moves the task to that quadrant.
+    const tabHit = pointerCollisions.find((c) =>
+      String(c.id).startsWith("q-tab-"),
+    );
+    if (tabHit) return [tabHit];
     const nestHit = pointerCollisions.find((c) => {
       const cid = String(c.id);
       if (!cid.startsWith("nest-")) return false;
@@ -288,6 +305,13 @@ export function MatrixClient({
       newParentId = null;
       newQuadrant = Number(overId.slice("quadrant-".length)) as Quadrant;
       insertAtFrontOfNestTarget = false; // append; same effect as first branch
+    } else if (overId.startsWith("q-tab-")) {
+      // Drop on a mobile quadrant tab: move to that quadrant, top-level,
+      // append at end. Also switch the visible quadrant so the user sees
+      // their task land somewhere immediately.
+      newParentId = null;
+      newQuadrant = Number(overId.slice("q-tab-".length)) as Quadrant;
+      setActiveQuadrant(newQuadrant);
     } else {
       // Drop on (or near) a specific task: become its sibling.
       const overTask = tasks.find((t) => t.id === overId);
@@ -312,7 +336,11 @@ export function MatrixClient({
       .map((t) => t.id);
 
     let newSiblingsOrder: string[];
-    if (overId.startsWith("nest-") || overId.startsWith("quadrant-")) {
+    if (
+      overId.startsWith("nest-") ||
+      overId.startsWith("quadrant-") ||
+      overId.startsWith("q-tab-")
+    ) {
       // Append at end (or front, if we wanted "newest first" for nest).
       newSiblingsOrder = insertAtFrontOfNestTarget
         ? [taskId, ...currentSiblings]
@@ -384,6 +412,11 @@ export function MatrixClient({
   const [tagsOpen, setTagsOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<TaskWithTagIds | null>(null);
   const [adding, setAdding] = useState<Quadrant | null>(null);
+
+  // ── Mobile single-quadrant view ──────────────────────────────────────
+  // Mobile shows one quadrant at a time (full-height, scrollable) with
+  // a tab bar to switch. Desktop renders the standard 2×2 grid.
+  const [activeQuadrant, setActiveQuadrant] = useState<Quadrant>(1);
   const submitTask = (q: Quadrant) =>
     (input: {
       title: string;
@@ -444,29 +477,54 @@ export function MatrixClient({
         onDragStart={onDragStart}
         onDragEnd={onDragEnd}
       >
-        <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-4 gap-2 p-2 md:grid-cols-2 md:grid-rows-2">
+        {/* Mobile-only quadrant tab bar. Each tab is also a drop target,
+            so cross-quadrant drag works on mobile (drop on a tab to move
+            the task there). Hidden on tablet/desktop (md+) where the
+            full 2×2 grid is shown. */}
+        <div className="bg-surface border-border flex flex-shrink-0 gap-1 border-b px-2 py-1.5 md:hidden">
           {([1, 2, 3, 4] as Quadrant[]).map((q) => (
-            <QuadrantPanel
+            <MobileQuadrantTab
               key={q}
               quadrant={q}
-              tasks={filteredByQuadrant[q]}
-              tags={initialTags}
-              tagsById={tagsById}
-              pending={pending}
-              adding={adding === q}
-              onStartAdd={() => setAdding(q)}
-              onCancelAdd={() => setAdding(null)}
-              onSubmitTask={submitTask(q)}
-              onToggleTask={(id) =>
-                startTransition(async () => {
-                  await toggleTaskCompleted(id);
-                  router.refresh();
-                })
-              }
-              onDeleteTask={handleDelete}
-              onEditTask={(t) => setEditingTask(t)}
-              onToggleCollapsed={toggleCollapsed}
+              isActive={q === activeQuadrant}
+              count={filteredByQuadrant[q].filter((t) => t.depth === 0).length}
+              onClick={() => setActiveQuadrant(q)}
             />
+          ))}
+        </div>
+
+        <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-1 gap-2 p-2 md:grid-cols-2 md:grid-rows-2">
+          {([1, 2, 3, 4] as Quadrant[]).map((q) => (
+            <div
+              key={q}
+              className={cn(
+                "flex min-h-0 flex-col",
+                // Hide non-active quadrants on mobile (single-quadrant view).
+                // On md+, all four show in the grid.
+                q !== activeQuadrant && "max-md:hidden",
+              )}
+            >
+              <QuadrantPanel
+                quadrant={q}
+                tasks={filteredByQuadrant[q]}
+                tags={initialTags}
+                tagsById={tagsById}
+                pending={pending}
+                adding={adding === q}
+                onStartAdd={() => setAdding(q)}
+                onCancelAdd={() => setAdding(null)}
+                onSubmitTask={submitTask(q)}
+                onToggleTask={(id) =>
+                  startTransition(async () => {
+                    await toggleTaskCompleted(id);
+                    router.refresh();
+                  })
+                }
+                onDeleteTask={handleDelete}
+                onEditTask={(t) => setEditingTask(t)}
+                onToggleCollapsed={toggleCollapsed}
+              />
+            </div>
           ))}
         </div>
 
@@ -542,6 +600,59 @@ function collectDescendantsLocal(
     }
   }
   return out;
+}
+
+/**
+ * Mobile-only tab in the quadrant switcher row. Doubles as a DnD drop
+ * target — dropping a task onto a tab moves the task to that quadrant
+ * (top-level, appended at end). The active tab gets a colored top
+ * border in the quadrant accent color.
+ */
+function MobileQuadrantTab({
+  quadrant,
+  isActive,
+  count,
+  onClick,
+}: {
+  quadrant: Quadrant;
+  isActive: boolean;
+  count: number;
+  onClick: () => void;
+}) {
+  const meta = QUADRANTS[quadrant];
+  const accent = QUADRANT_ACCENT[quadrant];
+  // Destructure right at the call site so React 19's lint doesn't treat
+  // the whole returned object as a ref-like value (it contains setNodeRef).
+  const { setNodeRef, isOver } = useDroppable({
+    id: `q-tab-${quadrant}`,
+    data: { type: "quadrant-tab", quadrant },
+  });
+  return (
+    <button
+      ref={setNodeRef}
+      type="button"
+      onClick={onClick}
+      aria-current={isActive ? "page" : undefined}
+      className={cn(
+        "flex flex-1 flex-col items-center justify-center gap-0.5 rounded-md px-1 py-1 transition-colors",
+        isActive ? "bg-muted" : "hover:bg-muted",
+        isOver && "ring-2 ring-[var(--accent)]",
+      )}
+      style={{
+        borderTop: `3px solid ${isActive ? accent : "transparent"}`,
+      }}
+    >
+      <span
+        className="text-[12.5px] font-bold leading-none"
+        style={{ color: accent }}
+      >
+        {meta.roman}
+      </span>
+      <span className="text-muted-foreground text-[10px] leading-none">
+        {count}
+      </span>
+    </button>
+  );
 }
 
 function UndoToast({

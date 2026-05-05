@@ -32,7 +32,14 @@ export function Header({
   };
 
   return (
-    <header className="bg-surface border-border flex flex-shrink-0 items-center gap-3 border-b px-4 py-2.5">
+    // `paddingTop` honors `env(safe-area-inset-top)` so on iPhone PWA
+    // (display: standalone + viewport-fit=cover) the header content sits
+    // BELOW the status bar (clock / battery / signal) instead of underneath
+    // it. Falls back to 10px when there's no safe area inset.
+    <header
+      className="bg-surface border-border flex flex-shrink-0 items-center gap-3 border-b px-4 pb-2.5"
+      style={{ paddingTop: "max(env(safe-area-inset-top), 0.625rem)" }}
+    >
       <h1 className="text-[15px] font-semibold tracking-tight">
         Get Your Shit Together
       </h1>

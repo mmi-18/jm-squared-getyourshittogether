@@ -21,8 +21,9 @@ export default function manifest(): MetadataRoute.Manifest {
     theme_color: "#0f172a",
     categories: ["productivity", "lifestyle"],
     icons: [
-      { src: "/icon.png", sizes: "any", type: "image/png", purpose: "any" },
-      { src: "/apple-icon.png", sizes: "any", type: "image/png", purpose: "any" },
+      // Routes auto-served by `src/app/icon.tsx` + `src/app/apple-icon.tsx`.
+      { src: "/icon", sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: "/apple-icon", sizes: "180x180", type: "image/png", purpose: "any" },
     ],
   };
 }
