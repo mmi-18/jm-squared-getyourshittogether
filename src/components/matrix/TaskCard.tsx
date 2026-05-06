@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useDroppable } from "@dnd-kit/core";
+import { useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   Check,
   ChevronRight,
@@ -79,57 +79,14 @@ export function TaskCard({
       depth,
     },
   });
-  const { attributes, listeners, setNodeRef, isDragging } = sortable;
-
-  // Three explicit drop zones per card, overlaying the card's top 30%,
-  // middle 40%, bottom 30% (with 18px minima for short cards). Each is
-  // its own droppable, so the collision result is unambiguous: pointer
-  // in the top zone → "before", middle → "nest", bottom → "after". No
-  // collision flipping = no make-room transform thrashing.
-  //
-  // Destructured at the call site so React 19's lint doesn't treat the
-  // returned object as a ref-like value (it contains setNodeRef).
-  const { setNodeRef: setBeforeRef, isOver: beforeIsOver } = useDroppable({
-    id: `before-${task.id}`,
-    data: { type: "before", taskId: task.id },
-  });
-  const { setNodeRef: setMiddleRef, isOver: middleIsOver } = useDroppable({
-    id: `nest-${task.id}`,
-    data: { type: "nest", taskId: task.id },
-  });
-  const { setNodeRef: setAfterRef, isOver: afterIsOver } = useDroppable({
-    id: `after-${task.id}`,
-    data: { type: "after", taskId: task.id },
-  });
-  const nestIsOver = middleIsOver;
-
-  // Spring-load: if a dragged task hovers this card AS A NEST TARGET
-  // and this card has folded subtasks, auto-expand after 500ms so the
-  // user can keep dragging into a precise position among the children
-  // (matches the iOS Finder folder spring-load + the quadrant-tab
-  // spring-load).
-  //
-  // The callback's identity changes on every parent render (it's
-  // re-created as `() => onToggleCollapsed(task.id)` in MatrixClient),
-  // so listing it as a useEffect dep would reset the 500ms timer on
-  // every drag-induced render and the timer would never reach the
-  // threshold. Solution: stash the latest callback in a ref so the
-  // effect only depends on the actual triggering state.
-  const onToggleCollapsedRef = useRef(onToggleCollapsed);
-  useEffect(() => {
-    onToggleCollapsedRef.current = onToggleCollapsed;
-  });
-  useEffect(() => {
-    if (!nestIsOver) return;
-    if (!hasChildren || !isCollapsed) return;
-    // 700ms — long enough that brief mid-zone passes during a drag don't
-    // accidentally fire the spring-load. Matches the quadrant-tab
-    // spring-load timing (also bumped to 700ms) for consistency.
-    const handle = setTimeout(() => {
-      onToggleCollapsedRef.current?.();
-    }, 700);
-    return () => clearTimeout(handle);
-  }, [nestIsOver, hasChildren, isCollapsed]);
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = sortable;
 
   const taskTags = task.tagIds
     .map((id) => tagsById.get(id))
@@ -145,31 +102,17 @@ export function TaskCard({
   const visibleTags = taskTags.slice(0, MAX_VISIBLE_TAG_BADGES);
   const overflowCount = taskTags.length - visibleTags.length;
 
-  // The sortable ref attaches to the card root for drag handling. The
-  // three zone droppables attach to their own overlay divs below.
   const setRefs = setNodeRef;
 
-  // Insertion line position — driven by which zone the pointer is in.
-  // The three zones (before/middle/after) are mutually exclusive
-  // droppables, so at most one of these is true at any time during drag.
-  const showLineAbove = beforeIsOver && !isDragging;
-  const showLineBelow = afterIsOver && !isDragging;
 
-  // CRITICAL: we deliberately DO NOT apply useSortable's transform/transition
-  // to the card. The whole "make room" shift was the source of the
-  // jumping the user complained about — the strategy applied a transform
-  // the instant a card became "over", and as the over.id flipped between
-  // sortable and nest droppables (or as cards' rects re-measured) the
-  // transform would re-apply / un-apply, producing the visible bounce.
-  //
-  // With the new three-zone droppables (before/nest/after), the over.id
-  // never matches a sortable item's id — so the strategy applies nothing
-  // — so cards stay still. Insertion lines + NEST badge replace the
-  // transform-based "make room" feedback.
-  //
-  // The dragged card itself uses opacity 0.4 to mark its source slot;
-  // DragOverlay handles the floating preview.
+  // Standard @dnd-kit/sortable styling: apply the strategy's transform +
+  // transition so cards shift smoothly to make room for the dragged card.
+  // This is the canonical pattern used by every sortable-list app
+  // (Linear, Notion, TickTick, Reminders). Anything custom on top of
+  // this has been a source of bugs.
   const style: React.CSSProperties = {
+    transform: CSS.Translate.toString(transform),
+    transition,
     opacity: isDragging ? 0.4 : 1,
     touchAction: "manipulation",
     background: tint !== "transparent" ? tint : undefined,
@@ -177,71 +120,20 @@ export function TaskCard({
   };
 
   return (
-    // Wrapper holds the absolute-positioned insertion lines so they don't
-    // shift the card's layout when toggling on/off.
-    <div
-      className="relative flex shrink-0 flex-col"
-      style={{ marginLeft: depth * 24 }}
-    >
-      {showLineAbove && (
-        <div
-          aria-hidden
-          className="bg-[var(--accent)] pointer-events-none absolute -top-0.5 left-2 right-2 z-20 h-1 rounded-full shadow"
-        />
-      )}
-      {showLineBelow && (
-        <div
-          aria-hidden
-          className="bg-[var(--accent)] pointer-events-none absolute -bottom-0.5 left-2 right-2 z-20 h-1 rounded-full shadow"
-        />
-      )}
     <div
       ref={setRefs}
-      style={style}
+      style={{ ...style, marginLeft: depth * 24 }}
       className={cn(
         "border-border bg-surface group relative flex shrink-0 flex-col overflow-hidden rounded-[6px] border shadow-sm",
         // "Done" states — completed and won't-do both fade the card body
         // but use distinct check-box / X markers below.
         (task.completed || task.wontDo) && "bg-muted/40",
-        // Active nest target — outline + NEST badge below.
-        nestIsOver && !isDragging && "ring-2 ring-[var(--accent)] ring-offset-1",
       )}
     >
       <span
         className="absolute bottom-0 left-0 top-0 w-[6px]"
         style={{ background: bar }}
       />
-
-      {/* The three drop zones. They stack ABSOLUTELY over the card with
-          pointer-events: none so they don't intercept clicks on the
-          buttons/inputs underneath, but @dnd-kit's collision detection
-          uses their getBoundingClientRect, not pointer events.
-          Heights use `max(N%, 18px)` so short cards still have a
-          hittable reorder zone. */}
-      <div
-        ref={setBeforeRef}
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0"
-        style={{ height: "max(30%, 18px)" }}
-      />
-      <div
-        ref={setMiddleRef}
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0"
-        style={{ top: "max(30%, 18px)", bottom: "max(30%, 18px)" }}
-      />
-      <div
-        ref={setAfterRef}
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 bottom-0"
-        style={{ height: "max(30%, 18px)" }}
-      />
-
-      {nestIsOver && !isDragging && (
-        <span className="bg-accent pointer-events-none absolute right-1.5 top-1.5 z-10 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white shadow">
-          Nest
-        </span>
-      )}
 
       {/* ── One-line row ─────────────────────────────────────────────── */}
       <div className="flex items-center gap-1.5 py-1.5 pl-3.5 pr-1.5">
@@ -372,7 +264,6 @@ export function TaskCard({
           {task.notes}
         </div>
       )}
-    </div>
     </div>
   );
 }
