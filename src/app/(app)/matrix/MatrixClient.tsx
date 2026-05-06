@@ -8,6 +8,7 @@ import {
   MeasuringStrategy,
   MouseSensor,
   TouchSensor,
+  closestCenter,
   pointerWithin,
   useDroppable,
   useSensor,
@@ -364,49 +365,36 @@ export function MatrixClient({
   const activeDescendantsRef = useRef<Set<string>>(new Set());
 
   /**
-   * Pure pointer-based collision detection over the three explicit drop
-   * zones every TaskCard registers (`before-X`, `nest-X`, `after-X`),
-   * plus the quadrant body and mobile tab containers.
+   * Collision detection with explicit priority order:
    *
-   * Returns ONLY zone droppables — never the sortable's own id, so
-   * @dnd-kit/sortable's strategy can't apply make-room transforms (the
-   * source of the visible jumping the user reported). Cards stay
-   * perfectly still during a drag; an insertion line + NEST badge
-   * provides visual feedback.
+   *   1. Mobile quadrant tabs (drag-onto-tab cross-quadrant move)
+   *   2. Task cards the cursor is INSIDE (via pointerWithin)
+   *   3. Anything else nearest by center (closestCenter for empty
+   *      quadrant body / between-card gaps)
+   *
+   * Step 2 is the critical one. The quadrant body's `useDroppable`
+   * envelops every task card's rect — with plain closestCenter, when
+   * the cursor sits near the geometric center of a populated list, the
+   * quadrant body's center is sometimes closer than any individual
+   * task's center. The quadrant wins, the card under the cursor never
+   * gets the over state, and drops land as top-level appends instead
+   * of reordering. pointer-within on cards bypasses that entirely.
    */
   const collisionDetection: CollisionDetection = (args) => {
     const pointerCollisions = pointerWithin(args);
 
-    // Mobile quadrant tab drop targets take priority.
     const tabHit = pointerCollisions.find((c) =>
       String(c.id).startsWith("q-tab-"),
     );
     if (tabHit) return [tabHit];
 
-    // before-X / nest-X / after-X. Filter self + descendants for the
-    // nest+sibling cases (can't nest into yourself or a descendant).
-    const zoneHit = pointerCollisions.find((c) => {
-      const cid = String(c.id);
-      const isZone =
-        cid.startsWith("before-") ||
-        cid.startsWith("nest-") ||
-        cid.startsWith("after-");
-      if (!isZone) return false;
-      const dashIdx = cid.indexOf("-");
-      const taskId = cid.slice(dashIdx + 1);
-      if (taskId === activeId) return false;
-      if (activeDescendantsRef.current.has(taskId)) return false;
-      return true;
+    const cardHit = pointerCollisions.find((c) => {
+      const id = String(c.id);
+      return !id.startsWith("quadrant-") && !id.startsWith("q-tab-");
     });
-    if (zoneHit) return [zoneHit];
+    if (cardHit) return [cardHit];
 
-    // Fallback: empty quadrant body.
-    const quadrantHit = pointerCollisions.find((c) =>
-      String(c.id).startsWith("quadrant-"),
-    );
-    if (quadrantHit) return [quadrantHit];
-
-    return [];
+    return closestCenter(args);
   };
 
   const onDragStart = (e: DragStartEvent) => {
