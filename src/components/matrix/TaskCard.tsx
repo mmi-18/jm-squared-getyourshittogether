@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -102,14 +102,26 @@ export function TaskCard({
   // and this card has folded subtasks, auto-expand after 500ms so the
   // user can keep dragging into a precise position among the children
   // (matches the iOS Finder folder spring-load + the quadrant-tab
-  // spring-load). Only fires when this card is currently folded.
+  // spring-load).
+  //
+  // The callback's identity changes on every parent render (it's
+  // re-created as `() => onToggleCollapsed(task.id)` in MatrixClient),
+  // so listing it as a useEffect dep would reset the 500ms timer on
+  // every drag-induced render and the timer would never reach the
+  // threshold. Solution: stash the latest callback in a ref so the
+  // effect only depends on the actual triggering state.
+  const onToggleCollapsedRef = useRef(onToggleCollapsed);
+  useEffect(() => {
+    onToggleCollapsedRef.current = onToggleCollapsed;
+  });
   useEffect(() => {
     if (!nestIsOver) return;
     if (!hasChildren || !isCollapsed) return;
-    if (!onToggleCollapsed) return;
-    const handle = setTimeout(() => onToggleCollapsed(), 500);
+    const handle = setTimeout(() => {
+      onToggleCollapsedRef.current?.();
+    }, 500);
     return () => clearTimeout(handle);
-  }, [nestIsOver, hasChildren, isCollapsed, onToggleCollapsed]);
+  }, [nestIsOver, hasChildren, isCollapsed]);
 
   const taskTags = task.tagIds
     .map((id) => tagsById.get(id))
@@ -144,16 +156,22 @@ export function TaskCard({
     opacity: isDragging ? 0.4 : 1,
     touchAction: "manipulation",
     background: tint !== "transparent" ? tint : undefined,
-    marginLeft: depth * 24,
+    // depth indent is on the wrapper; not duplicated here
   };
 
   return (
-    <>
+    // Wrapper holds the absolute-positioned insertion line so it doesn't
+    // shift the card's layout when toggling on/off. Without this wrapper,
+    // the line being a flex sibling pushed the card down → cursor left
+    // the card → isOver flipped off → line disappeared → infinite loop.
+    <div
+      className="relative flex shrink-0 flex-col"
+      style={{ marginLeft: depth * 24 }}
+    >
       {showInsertionLine && (
         <div
           aria-hidden
-          className="bg-[var(--accent)] mx-2 -my-0.5 h-1 flex-shrink-0 rounded-full"
-          style={{ marginLeft: depth * 24 + 8 }}
+          className="bg-[var(--accent)] pointer-events-none absolute -top-0.5 left-2 right-2 z-10 h-1 rounded-full shadow"
         />
       )}
     <div
@@ -309,7 +327,7 @@ export function TaskCard({
         </div>
       )}
     </div>
-    </>
+    </div>
   );
 }
 

@@ -403,12 +403,28 @@ export function MatrixClient({
       );
       const rect = droppableContainer?.rect.current;
       if (rect) {
-        const ratio = (args.pointerCoordinates.y - rect.top) / rect.height;
-        // Middle 50% nests; top/bottom 25% each fall through to reorder.
-        if (ratio >= 0.25 && ratio <= 0.75) {
-          return [nestHit];
+        // Edge zones are at LEAST 18px each (so short cards still have a
+        // hittable reorder area), or 30% of card height (whichever is
+        // larger on tall cards). Middle ≈ 40% = nest.
+        const edgePx = Math.max(rect.height * 0.3, 18);
+        const fromTop = args.pointerCoordinates.y - rect.top;
+        const fromBottom = rect.bottom - args.pointerCoordinates.y;
+        if (fromTop < edgePx || fromBottom < edgePx) {
+          // Edge — fall through to filtered closestCenter for reorder.
+          // CRITICAL: filter out nest-* droppables. They share the exact
+          // same DOM rect (and thus the same center) as their sortable
+          // counterparts, so an unfiltered closestCenter returns one or
+          // the other based on iteration order — a coin flip that breaks
+          // the gap-shift visualization when "nest-X" wins.
+          return closestCenter({
+            ...args,
+            droppableContainers: args.droppableContainers.filter(
+              (d) => !String(d.id).startsWith("nest-"),
+            ),
+          });
         }
-        // Edge zone — fall through to closestCenter for reorder.
+        // Middle zone — nest.
+        return [nestHit];
       } else {
         return [nestHit];
       }
