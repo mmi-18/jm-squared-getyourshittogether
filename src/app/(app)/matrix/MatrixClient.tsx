@@ -41,11 +41,16 @@ import { FilterStrip } from "@/components/matrix/FilterStrip";
 import { TagManagerModal } from "@/components/matrix/TagManagerModal";
 import { TaskCard, type TaskWithTagIds } from "@/components/matrix/TaskCard";
 import { EditTaskModal } from "@/components/matrix/EditTaskModal";
+import { BottomTabs, type View } from "@/components/matrix/BottomTabs";
+import { ListView } from "@/components/matrix/ListView";
+import { UpcomingRangePicker } from "@/components/matrix/UpcomingRangePicker";
 
 // localStorage key tracks which parent tasks have been EXPANDED (default
 // is "everything folded"). Renamed from the earlier "collapsed" key
 // since the semantics flipped — old data is intentionally ignored.
 const EXPANDED_STORAGE_KEY = "gyst-expanded-tasks";
+const VIEW_STORAGE_KEY = "gyst-view";
+const UPCOMING_RANGE_STORAGE_KEY = "gyst-upcoming-range";
 
 type UndoAction = { description: string; run: () => Promise<void> };
 
@@ -145,6 +150,51 @@ export function MatrixClient({
   const expandAll = () => setExpandedIds(new Set(allParentIds));
   const collapseAll = () => setExpandedIds(new Set());
 
+  // ── Top-level view: matrix / today / upcoming ────────────────────────
+  // (Declared early so the list-view useMemo below can read it.)
+  const [view, setView] = useState<View>(() => {
+    if (typeof window === "undefined") return "matrix";
+    const v = localStorage.getItem(VIEW_STORAGE_KEY);
+    if (v === "matrix" || v === "today" || v === "upcoming") return v;
+    return "matrix";
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(VIEW_STORAGE_KEY, view);
+    } catch {
+      /* private mode — ignore */
+    }
+  }, [view]);
+
+  // Upcoming view's date range, persisted per-browser. Defaults to
+  // (today, today+7) so a user landing on Upcoming for the first time
+  // sees a useful week-ahead view without having to configure anything.
+  const [upcomingRange, setUpcomingRange] = useState<{ from: string; to: string }>(
+    () => {
+      const today = isoOffset(0);
+      const week = isoOffset(7);
+      if (typeof window === "undefined") return { from: today, to: week };
+      try {
+        const raw = localStorage.getItem(UPCOMING_RANGE_STORAGE_KEY);
+        if (!raw) return { from: today, to: week };
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.from === "string" && typeof parsed.to === "string") {
+          return parsed;
+        }
+      } catch {
+        /* ignore */
+      }
+      return { from: today, to: week };
+    },
+  );
+  useEffect(() => {
+    try {
+      localStorage.setItem(UPCOMING_RANGE_STORAGE_KEY, JSON.stringify(upcomingRange));
+    } catch {
+      /* ignore */
+    }
+  }, [upcomingRange]);
+
   // ── Render-ready task tree per quadrant ──────────────────────────────
   const filteredByQuadrant = useMemo(() => {
     const matchSet = new Set<string>();
@@ -207,6 +257,70 @@ export function MatrixClient({
     return map;
   }, [tasks, filters, initialTags, expandedIds]);
 
+  // ── Today / Upcoming list-view tasks ─────────────────────────────────
+  // Sorted by (quadrant, deadline, sortOrder). Includes both top-level
+  // tasks and subtasks; subtasks render flat with a `↗ parent title`
+  // context link in their row. Today includes overdue (so they don't
+  // perpetually disappear); Upcoming respects the user's chosen range.
+  const listViewTasks = useMemo(() => {
+    if (view === "matrix") return [] as TaskWithTagIds[];
+
+    const matchSet = new Set<string>();
+    for (const id of filters.selectedTagIds) {
+      descendantTagIds(id, initialTags).forEach((d) => matchSet.add(d));
+    }
+    const today = isoOffset(0);
+    const lo =
+      upcomingRange.from < upcomingRange.to
+        ? upcomingRange.from
+        : upcomingRange.to;
+    const hi =
+      upcomingRange.from < upcomingRange.to
+        ? upcomingRange.to
+        : upcomingRange.from;
+
+    const passes = (t: TaskWithTagIds) => {
+      if (!filters.showCompleted && (t.completed || t.wontDo)) return false;
+      if (!t.deadline) return false;
+      const dl = formatIsoDate(
+        t.deadline instanceof Date ? t.deadline : new Date(t.deadline),
+      );
+      if (view === "today") {
+        // Include today + overdue so action items don't disappear.
+        if (dl > today) return false;
+      } else if (view === "upcoming") {
+        if (dl < lo || dl > hi) return false;
+      }
+      if (filters.selectedTagIds.length === 0) return true;
+      return t.tagIds.some((id) => matchSet.has(id));
+    };
+
+    return tasks
+      .filter(passes)
+      .sort((a, b) => {
+        if (a.quadrant !== b.quadrant) return a.quadrant - b.quadrant;
+        const adl = a.deadline
+          ? formatIsoDate(
+              a.deadline instanceof Date ? a.deadline : new Date(a.deadline),
+            )
+          : "";
+        const bdl = b.deadline
+          ? formatIsoDate(
+              b.deadline instanceof Date ? b.deadline : new Date(b.deadline),
+            )
+          : "";
+        if (adl !== bdl) return adl.localeCompare(bdl);
+        return a.sortOrder - b.sortOrder;
+      });
+  }, [view, tasks, filters, initialTags, upcomingRange]);
+
+  // For "↗ parent title" context links on subtasks in list view.
+  const parentTitleById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of tasks) m.set(t.id, t.title);
+    return m;
+  }, [tasks]);
+
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const tag of initialTags) {
@@ -249,14 +363,31 @@ export function MatrixClient({
   // tick.)
   const activeDescendantsRef = useRef<Set<string>>(new Set());
 
+  /**
+   * Collision detection with zones inside each card.
+   *
+   *   ┌─────────── card ───────────┐
+   *   │  top 25%  → reorder above  │
+   *   │  middle 50% → nest under   │
+   *   │  bottom 25% → reorder below │
+   *   └────────────────────────────┘
+   *
+   * Reorder zones fall through to closestCenter so @dnd-kit/sortable
+   * can pick the right insertion position; nest zone returns the
+   * `nest-X` droppable id.
+   *
+   * Without zone splitting, a card's nest droppable consumed the entire
+   * card area and reordering required pixel-precise placement in the
+   * thin gap between siblings — felt buggy on touch.
+   */
   const collisionDetection: CollisionDetection = (args) => {
     const pointerCollisions = pointerWithin(args);
-    // Mobile quadrant tab drop targets take priority — drop on a tab
-    // moves the task to that quadrant.
+    // Mobile quadrant tab drop targets take priority.
     const tabHit = pointerCollisions.find((c) =>
       String(c.id).startsWith("q-tab-"),
     );
     if (tabHit) return [tabHit];
+
     const nestHit = pointerCollisions.find((c) => {
       const cid = String(c.id);
       if (!cid.startsWith("nest-")) return false;
@@ -265,7 +396,24 @@ export function MatrixClient({
       if (activeDescendantsRef.current.has(taskId)) return false;
       return true;
     });
-    if (nestHit) return [nestHit];
+
+    if (nestHit && args.pointerCoordinates) {
+      const droppableContainer = args.droppableContainers.find(
+        (d) => d.id === nestHit.id,
+      );
+      const rect = droppableContainer?.rect.current;
+      if (rect) {
+        const ratio = (args.pointerCoordinates.y - rect.top) / rect.height;
+        // Middle 50% nests; top/bottom 25% each fall through to reorder.
+        if (ratio >= 0.25 && ratio <= 0.75) {
+          return [nestHit];
+        }
+        // Edge zone — fall through to closestCenter for reorder.
+      } else {
+        return [nestHit];
+      }
+    }
+
     return closestCenter(args);
   };
 
@@ -484,6 +632,14 @@ export function MatrixClient({
       next.add(parentId);
       return next;
     });
+    // If the user clicked "Add subtask" from the Today/Upcoming list,
+    // jump to the matrix view (focused on the parent's quadrant on
+    // mobile) so the inline form has somewhere to render.
+    const parent = tasks.find((t) => t.id === parentId);
+    if (parent && view !== "matrix") {
+      setView("matrix");
+      setActiveQuadrant(parent.quadrant as Quadrant);
+    }
     setAddingSubtaskTo(parentId);
   };
 
@@ -568,85 +724,122 @@ export function MatrixClient({
           filters={filters}
           onChange={setFilters}
           taskCounts={tagCounts}
+          // Today/Upcoming views OWN their time selection — hide the
+          // matrix-view's deadline preset filter to avoid two competing
+          // controls.
+          hideDeadlineFilter={view !== "matrix"}
         />
       </div>
 
-      <DndContext
-        sensors={sensors}
-        collisionDetection={collisionDetection}
-        onDragStart={onDragStart}
-        onDragEnd={onDragEnd}
-      >
-        {/* Mobile-only quadrant tab bar. Each tab is also a drop target,
-            so cross-quadrant drag works on mobile (drop on a tab to move
-            the task there). Hidden on tablet/desktop (md+) where the
-            full 2×2 grid is shown. */}
-        <div className="bg-surface border-border flex flex-shrink-0 gap-1 border-b px-2 py-1.5 md:hidden">
-          {([1, 2, 3, 4] as Quadrant[]).map((q) => (
-            <MobileQuadrantTab
-              key={q}
-              quadrant={q}
-              isActive={q === activeQuadrant}
-              count={filteredByQuadrant[q].filter((t) => t.depth === 0).length}
-              onClick={() => setActiveQuadrant(q)}
-              onLongHover={() => setActiveQuadrant(q)}
-            />
-          ))}
-        </div>
+      {view === "upcoming" && (
+        <UpcomingRangePicker
+          from={upcomingRange.from}
+          to={upcomingRange.to}
+          onChange={setUpcomingRange}
+        />
+      )}
 
-        <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-1 gap-2 p-2 md:grid-cols-2 md:grid-rows-2">
-          {([1, 2, 3, 4] as Quadrant[]).map((q) => (
-            <div
-              key={q}
-              className={cn(
-                "flex min-h-0 flex-col",
-                // Hide non-active quadrants on mobile (single-quadrant view).
-                // On md+, all four show in the grid.
-                q !== activeQuadrant && "max-md:hidden",
-              )}
-            >
-              <QuadrantPanel
+      {view === "matrix" ? (
+        <DndContext
+          sensors={sensors}
+          collisionDetection={collisionDetection}
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
+        >
+          {/* Mobile-only quadrant tab bar. Each tab is also a drop target,
+              so cross-quadrant drag works on mobile (drop on a tab to move
+              the task there). Hidden on tablet/desktop (md+) where the
+              full 2×2 grid is shown. */}
+          <div className="bg-surface border-border flex flex-shrink-0 gap-1 border-b px-2 py-1.5 md:hidden">
+            {([1, 2, 3, 4] as Quadrant[]).map((q) => (
+              <MobileQuadrantTab
+                key={q}
                 quadrant={q}
-                tasks={filteredByQuadrant[q]}
-                tags={initialTags}
-                tagsById={tagsById}
-                pending={pending}
-                adding={adding === q}
-                onStartAdd={() => setAdding(q)}
-                onCancelAdd={() => setAdding(null)}
-                onSubmitTask={submitTask(q)}
-                onToggleTask={(id) =>
-                  startTransition(async () => {
-                    await toggleTaskCompleted(id);
-                    router.refresh();
-                  })
-                }
-                onDeleteTask={handleDelete}
-                onEditTask={(t) => setEditingTask(t)}
-                onToggleCollapsed={toggleCollapsed}
-                onSetDeadline={handleSetDeadline}
-                onAddSubtask={handleAddSubtask}
-                onToggleWontDo={handleToggleWontDo}
-                addingSubtaskTo={addingSubtaskTo}
-                onSubmitSubtask={handleSubmitSubtask}
-                onCancelSubtask={() => setAddingSubtaskTo(null)}
+                isActive={q === activeQuadrant}
+                count={filteredByQuadrant[q].filter((t) => t.depth === 0).length}
+                onClick={() => setActiveQuadrant(q)}
+                onLongHover={() => setActiveQuadrant(q)}
               />
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
 
-        <DragOverlay dropAnimation={null}>
-          {activeTask && (
-            <TaskCard
-              task={activeTask}
-              tagsById={tagsById}
-              disabled
-              onToggle={() => {}}
-              onDelete={() => {}}
-            />
-          )}
-        </DragOverlay>
-      </DndContext>
+          <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-1 gap-2 p-2 md:grid-cols-2 md:grid-rows-2">
+            {([1, 2, 3, 4] as Quadrant[]).map((q) => (
+              <div
+                key={q}
+                className={cn(
+                  "flex min-h-0 flex-col",
+                  q !== activeQuadrant && "max-md:hidden",
+                )}
+              >
+                <QuadrantPanel
+                  quadrant={q}
+                  tasks={filteredByQuadrant[q]}
+                  tags={initialTags}
+                  tagsById={tagsById}
+                  pending={pending}
+                  adding={adding === q}
+                  onStartAdd={() => setAdding(q)}
+                  onCancelAdd={() => setAdding(null)}
+                  onSubmitTask={submitTask(q)}
+                  onToggleTask={(id) =>
+                    startTransition(async () => {
+                      await toggleTaskCompleted(id);
+                      router.refresh();
+                    })
+                  }
+                  onDeleteTask={handleDelete}
+                  onEditTask={(t) => setEditingTask(t)}
+                  onToggleCollapsed={toggleCollapsed}
+                  onSetDeadline={handleSetDeadline}
+                  onAddSubtask={handleAddSubtask}
+                  onToggleWontDo={handleToggleWontDo}
+                  addingSubtaskTo={addingSubtaskTo}
+                  onSubmitSubtask={handleSubmitSubtask}
+                  onCancelSubtask={() => setAddingSubtaskTo(null)}
+                />
+              </div>
+            ))}
+          </div>
+
+          <DragOverlay dropAnimation={null}>
+            {activeTask && (
+              <TaskCard
+                task={activeTask}
+                tagsById={tagsById}
+                disabled
+                onToggle={() => {}}
+                onDelete={() => {}}
+              />
+            )}
+          </DragOverlay>
+        </DndContext>
+      ) : (
+        <ListView
+          tasks={listViewTasks}
+          parentTitleById={parentTitleById}
+          tagsById={tagsById}
+          pending={pending}
+          emptyMessage={
+            view === "today"
+              ? "Nothing due today (or overdue). Nice."
+              : "Nothing due in this range."
+          }
+          onToggleTask={(id) =>
+            startTransition(async () => {
+              await toggleTaskCompleted(id);
+              router.refresh();
+            })
+          }
+          onDeleteTask={handleDelete}
+          onEditTask={(t) => setEditingTask(t)}
+          onSetDeadline={handleSetDeadline}
+          onAddSubtask={handleAddSubtask}
+          onToggleWontDo={handleToggleWontDo}
+        />
+      )}
+
+      <BottomTabs view={view} onChangeView={setView} />
 
       <TagManagerModal
         open={tagsOpen}
@@ -683,6 +876,19 @@ export function MatrixClient({
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+
+function isoOffset(daysFromToday: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + daysFromToday);
+  return formatIsoDate(d);
+}
+
+function formatIsoDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 function collectDescendantsLocal(
   rootId: string,

@@ -32,11 +32,15 @@ export function FilterStrip({
   filters,
   onChange,
   taskCounts,
+  hideDeadlineFilter = false,
 }: {
   tags: Tag[];
   filters: FilterState;
   onChange: (next: FilterState) => void;
   taskCounts: Map<string, number>;
+  /** When true (Today / Upcoming views), the deadline preset pill is
+   *  hidden — those views own their time selection. */
+  hideDeadlineFilter?: boolean;
 }) {
   const tagsById = useMemo(() => {
     const m = new Map<string, Tag>();
@@ -103,10 +107,12 @@ export function FilterStrip({
           />
         ))}
 
-        <DeadlineFilterPill
-          value={filters.deadlineFilter}
-          onChange={(deadlineFilter) => onChange({ ...filters, deadlineFilter })}
-        />
+        {!hideDeadlineFilter && (
+          <DeadlineFilterPill
+            value={filters.deadlineFilter}
+            onChange={(deadlineFilter) => onChange({ ...filters, deadlineFilter })}
+          />
+        )}
 
         <Toggle
           on={filters.showCompleted}

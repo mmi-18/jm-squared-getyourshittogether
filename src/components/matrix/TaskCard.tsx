@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -80,16 +80,36 @@ export function TaskCard({
       depth,
     },
   });
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    sortable;
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+    isOver: sortableIsOver,
+  } = sortable;
 
   // Separate droppable so other tasks can be dragged ONTO this one to
   // nest under it. id is namespaced ("nest-...") so the collision
   // detector in MatrixClient can tell nest from reorder.
-  const nest = useDroppable({
+  const { setNodeRef: setNestRef, isOver: nestIsOver } = useDroppable({
     id: `nest-${task.id}`,
     data: { type: "nest", taskId: task.id },
   });
+
+  // Spring-load: if a dragged task hovers this card AS A NEST TARGET
+  // and this card has folded subtasks, auto-expand after 500ms so the
+  // user can keep dragging into a precise position among the children
+  // (matches the iOS Finder folder spring-load + the quadrant-tab
+  // spring-load). Only fires when this card is currently folded.
+  useEffect(() => {
+    if (!nestIsOver) return;
+    if (!hasChildren || !isCollapsed) return;
+    if (!onToggleCollapsed) return;
+    const handle = setTimeout(() => onToggleCollapsed(), 500);
+    return () => clearTimeout(handle);
+  }, [nestIsOver, hasChildren, isCollapsed, onToggleCollapsed]);
 
   const taskTags = task.tagIds
     .map((id) => tagsById.get(id))
@@ -108,8 +128,15 @@ export function TaskCard({
   // Combine the sortable + droppable refs onto the same DOM node.
   const setRefs = (el: HTMLDivElement | null) => {
     setNodeRef(el);
-    nest.setNodeRef(el);
+    setNestRef(el);
   };
+
+  // Insertion line shown ABOVE this card when the user is currently
+  // hovering it as a *reorder* target (not a nest target — that gets
+  // the outline + NEST badge instead). Gives a clear "drop will land
+  // here" cue, since the @dnd-kit/sortable shift animation alone can
+  // be too subtle on touch.
+  const showInsertionLine = sortableIsOver && !isDragging && !nestIsOver;
 
   const style: React.CSSProperties = {
     transform: CSS.Translate.toString(transform),
@@ -121,6 +148,14 @@ export function TaskCard({
   };
 
   return (
+    <>
+      {showInsertionLine && (
+        <div
+          aria-hidden
+          className="bg-[var(--accent)] mx-2 -my-0.5 h-1 flex-shrink-0 rounded-full"
+          style={{ marginLeft: depth * 24 + 8 }}
+        />
+      )}
     <div
       ref={setRefs}
       style={style}
@@ -130,7 +165,7 @@ export function TaskCard({
         // but use distinct check-box / X markers below.
         (task.completed || task.wontDo) && "bg-muted/40",
         // Active nest target — outline + NEST badge below.
-        nest.isOver && !isDragging && "ring-2 ring-[var(--accent)] ring-offset-1",
+        nestIsOver && !isDragging && "ring-2 ring-[var(--accent)] ring-offset-1",
       )}
     >
       <span
@@ -138,7 +173,7 @@ export function TaskCard({
         style={{ background: bar }}
       />
 
-      {nest.isOver && !isDragging && (
+      {nestIsOver && !isDragging && (
         <span className="bg-accent pointer-events-none absolute right-1.5 top-1.5 z-10 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white shadow">
           Nest
         </span>
@@ -274,6 +309,7 @@ export function TaskCard({
         </div>
       )}
     </div>
+    </>
   );
 }
 
