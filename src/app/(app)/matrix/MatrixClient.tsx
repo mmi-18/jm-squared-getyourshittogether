@@ -443,38 +443,27 @@ export function MatrixClient({
     // ── Determine target group + insertion position ───────────────────
     let newParentId: string | null;
     let newQuadrant: Quadrant;
-    let insertAtFrontOfNestTarget = false;
 
-    // Determine the destination based on which zone droppable is `over`.
-    // Zone ids: "before-X" / "nest-X" / "after-X" / "quadrant-N" / "q-tab-N".
+    // Resolve destination from over.id. The current collision detection
+    // returns plain task ids when the cursor is over a card (cardHit
+    // priority via pointer-within), or quadrant-N / q-tab-N for the
+    // empty-space and tab fallbacks.
     let zoneRefTask: TaskWithTagIds | null = null;
-    let zonePosition: "before" | "nest" | "after" | null = null;
 
-    if (overId.startsWith("nest-")) {
-      const targetId = overId.slice("nest-".length);
-      zoneRefTask = tasks.find((t) => t.id === targetId) ?? null;
-      if (!zoneRefTask) return;
-      zonePosition = "nest";
-      newParentId = targetId;
-      newQuadrant = zoneRefTask.quadrant as Quadrant;
-    } else if (overId.startsWith("before-") || overId.startsWith("after-")) {
-      const isBefore = overId.startsWith("before-");
-      const targetId = overId.slice(isBefore ? "before-".length : "after-".length);
-      zoneRefTask = tasks.find((t) => t.id === targetId) ?? null;
-      if (!zoneRefTask) return;
-      zonePosition = isBefore ? "before" : "after";
-      newParentId = zoneRefTask.parentId;
-      newQuadrant = zoneRefTask.quadrant as Quadrant;
-    } else if (overId.startsWith("quadrant-")) {
+    if (overId.startsWith("quadrant-")) {
       newParentId = null;
       newQuadrant = Number(overId.slice("quadrant-".length)) as Quadrant;
-      insertAtFrontOfNestTarget = false;
     } else if (overId.startsWith("q-tab-")) {
       newParentId = null;
       newQuadrant = Number(overId.slice("q-tab-".length)) as Quadrant;
       setActiveQuadrant(newQuadrant);
     } else {
-      return;
+      // Plain task id — drop near another card. Active becomes a sibling
+      // of that task, inserted at its position (over-task shifts down).
+      zoneRefTask = tasks.find((t) => t.id === overId) ?? null;
+      if (!zoneRefTask) return;
+      newParentId = zoneRefTask.parentId;
+      newQuadrant = zoneRefTask.quadrant as Quadrant;
     }
 
     // Build the new sibling group order.
@@ -493,13 +482,10 @@ export function MatrixClient({
       .map((t) => t.id);
 
     let newSiblingsOrder: string[];
-    if (zonePosition === "nest") {
-      // Nest: append to end of target's children list.
-      newSiblingsOrder = insertAtFrontOfNestTarget
-        ? [taskId, ...currentSiblings]
-        : [...currentSiblings, taskId];
-    } else if (zonePosition === "before" && zoneRefTask) {
-      // Insert immediately before the reference task in its sibling group.
+    if (zoneRefTask) {
+      // Drop near a specific task: insert active at over-task's index
+      // (matches the arrayMove semantics @dnd-kit/sortable was previewing
+      // visually during the drag).
       const refIdx = currentSiblings.indexOf(zoneRefTask.id);
       const insertAt = refIdx === -1 ? currentSiblings.length : refIdx;
       newSiblingsOrder = [
@@ -507,17 +493,8 @@ export function MatrixClient({
         taskId,
         ...currentSiblings.slice(insertAt),
       ];
-    } else if (zonePosition === "after" && zoneRefTask) {
-      // Insert immediately after the reference task.
-      const refIdx = currentSiblings.indexOf(zoneRefTask.id);
-      const insertAt = refIdx === -1 ? currentSiblings.length : refIdx + 1;
-      newSiblingsOrder = [
-        ...currentSiblings.slice(0, insertAt),
-        taskId,
-        ...currentSiblings.slice(insertAt),
-      ];
     } else {
-      // Quadrant body / quadrant tab — append.
+      // Quadrant body / quadrant tab — append at end.
       newSiblingsOrder = [...currentSiblings, taskId];
     }
 
