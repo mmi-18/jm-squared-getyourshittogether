@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   DndContext,
   KeyboardSensor,
+  MeasuringStrategy,
   MouseSensor,
   TouchSensor,
   closestCenter,
@@ -759,6 +760,17 @@ export function MatrixClient({
         <DndContext
           sensors={sensors}
           collisionDetection={collisionDetection}
+          // Freeze droppable rects at drag start instead of re-measuring
+          // every frame. Without this, when card B shifts up to make
+          // room, its measured rect shifts too — `closestCenter` then
+          // sees a different "closest", flips the over to a different
+          // card, B unshifts… and you get the visible jumping the user
+          // reported. With BeforeDragging, the math uses each card's
+          // ORIGINAL position; the visual gap-shift via CSS transform
+          // still plays as feedback, but the collision result is stable.
+          measuring={{
+            droppable: { strategy: MeasuringStrategy.BeforeDragging },
+          }}
           onDragStart={onDragStart}
           onDragEnd={onDragEnd}
         >
