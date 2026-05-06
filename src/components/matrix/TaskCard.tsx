@@ -150,9 +150,22 @@ export function TaskCard({
   // be too subtle on touch.
   const showInsertionLine = sortableIsOver && !isDragging && !nestIsOver;
 
+  // Override @dnd-kit/sortable's default `transform 250ms ... 0s` with a
+  // ~100ms transition-delay on non-dragged cards. The "shift to make
+  // room" animation no longer fires the instant your pointer crosses
+  // a card's center — quick passes don't shuffle cards around. Only
+  // when the over.id is *stable* for ~100ms does the destination card
+  // slide out of the way. Combined with the BeforeDragging measuring
+  // strategy, this kills the bouncing the user reported.
+  //
+  // The dragged card itself uses no transition (it follows the cursor
+  // via the transform from useSortable + the DragOverlay).
+  const REORDER_TRANSITION =
+    "transform 200ms cubic-bezier(0.25, 1, 0.5, 1) 100ms";
+
   const style: React.CSSProperties = {
     transform: CSS.Translate.toString(transform),
-    transition,
+    transition: isDragging ? undefined : transition ? REORDER_TRANSITION : undefined,
     opacity: isDragging ? 0.4 : 1,
     touchAction: "manipulation",
     background: tint !== "transparent" ? tint : undefined,
