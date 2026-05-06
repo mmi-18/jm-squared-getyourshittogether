@@ -552,7 +552,14 @@ export function MatrixClient({
       }),
     );
 
-    // ── Server fire-and-forget (refresh only on error to roll back) ──
+    // ── Server action + explicit refresh ─────────────────────────────
+    // router.refresh() AFTER successful moveTask forces the client to
+    // re-fetch and pick up the server's view. If the server state
+    // matches the optimistic state, the prev-prop reset is a no-op
+    // visually. If they diverge (because moveTask hit a server-side
+    // validation error etc.), the truth wins and the user sees the
+    // error toast below — better than a phantom-saved card that snaps
+    // back without any explanation.
     startTransition(async () => {
       try {
         await moveTask({
@@ -561,10 +568,12 @@ export function MatrixClient({
           newQuadrant,
           newSiblingsOrder,
         });
-        // No router.refresh: local state matches server.
+        router.refresh();
       } catch (err) {
         console.error("moveTask failed:", err);
-        // Reset to server state on error.
+        setDragError(
+          err instanceof Error ? err.message : "Couldn't save the move",
+        );
         router.refresh();
       }
     });
@@ -674,6 +683,11 @@ export function MatrixClient({
         router.refresh();
       });
     };
+
+  // ── Drag error toast — surfaces moveTask failures so they don't get
+  // silently swallowed (which previously presented as "drop appears to
+  // land, then snaps back to original position" with no explanation).
+  const [dragError, setDragError] = useState<string | null>(null);
 
   // ── Undo ─────────────────────────────────────────────────────────────
   const [pendingUndo, setPendingUndo] = useState<UndoAction | null>(null);
@@ -873,6 +887,13 @@ export function MatrixClient({
           }}
         />
       )}
+
+      {dragError && (
+        <ErrorToast
+          message={dragError}
+          onDismiss={() => setDragError(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1020,6 +1041,41 @@ function UndoToast({
         onClick={onDismiss}
         aria-label="Dismiss"
         className="text-background/70 hover:text-background"
+      >
+        <XIcon size={14} />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Bottom-center error toast for failed drops. Auto-dismisses after 5s.
+ * Sits above the bottom tabs (z-[60]) so it's visible regardless of
+ * which view the user is in.
+ */
+function ErrorToast({
+  message,
+  onDismiss,
+}: {
+  message: string;
+  onDismiss: () => void;
+}) {
+  useEffect(() => {
+    const handle = setTimeout(onDismiss, 5000);
+    return () => clearTimeout(handle);
+  }, [message, onDismiss]);
+
+  return (
+    <div
+      role="alert"
+      className="fixed bottom-4 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-3 rounded-lg border border-red-700 bg-red-600 px-4 py-2 text-white shadow-md"
+    >
+      <span className="text-sm">{message}</span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        className="text-white/70 hover:text-white"
       >
         <XIcon size={14} />
       </button>

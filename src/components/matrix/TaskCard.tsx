@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
@@ -86,34 +86,7 @@ export function TaskCard({
     transform,
     transition,
     isDragging,
-    isOver,
   } = sortable;
-
-  // Spring-load expand. While a *different* task is being dragged and
-  // its cursor hovers this card (sortable.isOver becomes true via the
-  // pointer-within-cards collision strategy in MatrixClient), and this
-  // card has folded subtasks, auto-expand after 700ms so the user can
-  // keep dragging into a precise position among the children. Same
-  // dwell-to-reveal UX as the iOS Finder folder spring-load and the
-  // mobile quadrant-tab spring-load.
-  //
-  // The callback's identity changes on every parent render — listing
-  // it as a useEffect dep would reset the timer on every drag-induced
-  // render and the timer would never reach 700ms. Stash it in a ref so
-  // the effect's deps stay limited to the actual triggering state.
-  const onToggleCollapsedRef = useRef(onToggleCollapsed);
-  useEffect(() => {
-    onToggleCollapsedRef.current = onToggleCollapsed;
-  });
-  useEffect(() => {
-    if (!isOver) return;
-    if (isDragging) return; // we're the dragged card, not a drop target
-    if (!hasChildren || !isCollapsed) return;
-    const handle = setTimeout(() => {
-      onToggleCollapsedRef.current?.();
-    }, 700);
-    return () => clearTimeout(handle);
-  }, [isOver, isDragging, hasChildren, isCollapsed]);
 
   const taskTags = task.tagIds
     .map((id) => tagsById.get(id))
