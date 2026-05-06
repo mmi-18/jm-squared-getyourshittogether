@@ -113,8 +113,8 @@ export async function updateTask(input: {
 }
 
 /**
- * Toggle the `completed` flag. Optimized for the common path (single field
- * write, no transaction) since it's the most-frequent mutation on the board.
+ * Toggle the `completed` flag. Mutually exclusive with `wontDo` — flipping
+ * to completed clears any prior won't-do flag.
  */
 export async function toggleTaskCompleted(id: string) {
   const user = await requireUser();
@@ -125,7 +125,30 @@ export async function toggleTaskCompleted(id: string) {
   if (!task) throw new Error("Task not found");
   await db.task.update({
     where: { id },
-    data: { completed: !task.completed },
+    data: task.completed
+      ? { completed: false }
+      : { completed: true, wontDo: false },
+  });
+  revalidate();
+}
+
+/**
+ * Toggle the `wontDo` flag — "I'm dismissing this task without doing it."
+ * Mutually exclusive with `completed`; flipping wontDo on clears completed.
+ * Treated as "off-active" by the show-completed filter.
+ */
+export async function toggleTaskWontDo(id: string) {
+  const user = await requireUser();
+  const task = await db.task.findFirst({
+    where: { id, userId: user.id, deletedAt: null },
+    select: { wontDo: true },
+  });
+  if (!task) throw new Error("Task not found");
+  await db.task.update({
+    where: { id },
+    data: task.wontDo
+      ? { wontDo: false }
+      : { wontDo: true, completed: false },
   });
   revalidate();
 }

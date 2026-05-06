@@ -40,7 +40,7 @@ export const auth = betterAuth({
     additionalFields: {
       theme: {
         type: "string", // "light" | "dark" | "system"
-        defaultValue: "system",
+        defaultValue: "dark",
         input: false,
       },
       timezone: {

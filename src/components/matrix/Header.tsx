@@ -1,6 +1,14 @@
 "use client";
 
-import { Download, LogOut, Moon, Sun, Tags as TagsIcon } from "lucide-react";
+import {
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Download,
+  LogOut,
+  Moon,
+  Sun,
+  Tags as TagsIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { useTransition } from "react";
 import { useRouter } from "next/navigation";
@@ -13,10 +21,17 @@ export function Header({
   userEmail,
   theme,
   onOpenTags,
+  hasAnyExpanded,
+  onExpandAll,
+  onCollapseAll,
 }: {
   userEmail: string;
   theme: Theme;
   onOpenTags: () => void;
+  /** True when at least one parent task is currently expanded. */
+  hasAnyExpanded: boolean;
+  onExpandAll: () => void;
+  onCollapseAll: () => void;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -47,6 +62,21 @@ export function Header({
         {userEmail}
       </span>
       <div className="flex-1" />
+
+      {/* Expand all / Collapse all subtasks. The icon flips based on the
+          current state — if anything is expanded, the action collapses
+          everything; otherwise it expands all parents that have children. */}
+      <button
+        onClick={hasAnyExpanded ? onCollapseAll : onExpandAll}
+        className="border-border hover:bg-muted inline-flex items-center gap-1.5 rounded-md border bg-surface px-2.5 py-1 text-xs"
+        aria-label={hasAnyExpanded ? "Collapse all subtasks" : "Expand all subtasks"}
+        title={hasAnyExpanded ? "Collapse all subtasks" : "Expand all subtasks"}
+      >
+        {hasAnyExpanded ? <ChevronsDownUp size={13} /> : <ChevronsUpDown size={13} />}
+        <span className="hidden sm:inline">
+          {hasAnyExpanded ? "Collapse all" : "Expand all"}
+        </span>
+      </button>
 
       <Link
         href="/import"

@@ -10,8 +10,10 @@ import type { Tag } from "@prisma/client";
 import { cn } from "@/lib/utils";
 import { QUADRANTS, type Quadrant } from "@/lib/types";
 import { QUADRANT_ACCENT } from "@/lib/quadrant-utils";
+import { Fragment } from "react";
 import { TaskCard, type TaskWithTagIds } from "./TaskCard";
 import { InlineTaskForm } from "./InlineTaskForm";
+import { SubtaskForm } from "./SubtaskForm";
 
 export type RenderedTask = TaskWithTagIds & {
   depth: number;
@@ -43,6 +45,12 @@ export function QuadrantPanel({
   onDeleteTask,
   onEditTask,
   onToggleCollapsed,
+  onSetDeadline,
+  onAddSubtask,
+  onToggleWontDo,
+  addingSubtaskTo,
+  onSubmitSubtask,
+  onCancelSubtask,
 }: {
   quadrant: Quadrant;
   tasks: RenderedTask[];
@@ -62,6 +70,12 @@ export function QuadrantPanel({
   onDeleteTask: (id: string) => void;
   onEditTask: (task: TaskWithTagIds) => void;
   onToggleCollapsed: (id: string) => void;
+  onSetDeadline: (id: string, deadline: string | null) => void;
+  onAddSubtask: (parentId: string) => void;
+  onToggleWontDo: (id: string) => void;
+  addingSubtaskTo: string | null;
+  onSubmitSubtask: (parentId: string, title: string) => void;
+  onCancelSubtask: () => void;
 }) {
   const meta = QUADRANTS[quadrant];
   const { isOver, setNodeRef } = useDroppable({
@@ -127,19 +141,34 @@ export function QuadrantPanel({
           )}
 
           {tasks.map((task) => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              depth={task.depth}
-              hasChildren={task.hasChildren}
-              isCollapsed={task.isCollapsed}
-              onToggleCollapsed={() => onToggleCollapsed(task.id)}
-              tagsById={tagsById}
-              disabled={pending}
-              onToggle={() => onToggleTask(task.id)}
-              onDelete={() => onDeleteTask(task.id)}
-              onEdit={() => onEditTask(task)}
-            />
+            <Fragment key={task.id}>
+              <TaskCard
+                task={task}
+                depth={task.depth}
+                hasChildren={task.hasChildren}
+                isCollapsed={task.isCollapsed}
+                onToggleCollapsed={() => onToggleCollapsed(task.id)}
+                tagsById={tagsById}
+                disabled={pending}
+                onToggle={() => onToggleTask(task.id)}
+                onDelete={() => onDeleteTask(task.id)}
+                onEdit={() => onEditTask(task)}
+                onSetDeadline={(d) => onSetDeadline(task.id, d)}
+                onAddSubtask={() => onAddSubtask(task.id)}
+                onToggleWontDo={() => onToggleWontDo(task.id)}
+              />
+              {/* Inline subtask form — appears directly under the parent
+                  when the user clicks "Add subtask" in its menu. Stays
+                  open after each submit for batch entry. */}
+              {addingSubtaskTo === task.id && (
+                <SubtaskForm
+                  parentTitle={task.title}
+                  depth={task.depth}
+                  onSubmit={(title) => onSubmitSubtask(task.id, title)}
+                  onCancel={onCancelSubtask}
+                />
+              )}
+            </Fragment>
           ))}
 
           {adding && (

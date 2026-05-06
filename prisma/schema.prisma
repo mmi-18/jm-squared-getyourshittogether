@@ -55,7 +55,7 @@ model User {
   updatedAt     DateTime @updatedAt @db.Timestamptz
 
   // ── Domain additional fields ──────────────────────────────────────────────
-  theme          Theme     @default(system)
+  theme          Theme     @default(dark)
   // IANA TZ identifier (e.g. "Europe/Berlin"). Stamped from the browser at
   // signup; user can change it in settings. Used by schedule recurrence math.
   timezone       String    @default("UTC")
@@ -174,6 +174,10 @@ model Task {
   quadrant         Int
   deadline         DateTime? @db.Date
   completed        Boolean   @default(false)
+  // "Won't do" — task dismissed without doing it. Mutually exclusive
+  // with `completed`; the toggle actions enforce that. Treated as "done"
+  // for the show-completed filter.
+  wontDo           Boolean   @default(false)
   sortOrder        Int       @default(0)
   scheduleId       String?
   scheduledForDate DateTime? @db.Date

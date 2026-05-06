@@ -9,9 +9,9 @@ import {
   ChevronRight,
   FileText,
   GripVertical,
-  Pencil,
-  Trash2,
+  X as XIcon,
 } from "lucide-react";
+import { TaskMenu } from "./TaskMenu";
 import type { Tag, Task } from "@prisma/client";
 import { cn } from "@/lib/utils";
 import {
@@ -53,6 +53,9 @@ export function TaskCard({
   onToggle,
   onDelete,
   onEdit,
+  onSetDeadline,
+  onAddSubtask,
+  onToggleWontDo,
 }: {
   task: TaskWithTagIds;
   tagsById: Map<string, Tag>;
@@ -64,6 +67,9 @@ export function TaskCard({
   onToggle: () => void;
   onDelete: () => void;
   onEdit?: () => void;
+  onSetDeadline?: (deadline: string | null) => void;
+  onAddSubtask?: () => void;
+  onToggleWontDo?: () => void;
 }) {
   const sortable = useSortable({
     id: task.id,
@@ -120,7 +126,9 @@ export function TaskCard({
       style={style}
       className={cn(
         "border-border bg-surface group relative flex shrink-0 flex-col overflow-hidden rounded-[6px] border shadow-sm",
-        task.completed && "bg-muted/40",
+        // "Done" states — completed and won't-do both fade the card body
+        // but use distinct check-box / X markers below.
+        (task.completed || task.wontDo) && "bg-muted/40",
         // Active nest target — outline + NEST badge below.
         nest.isOver && !isDragging && "ring-2 ring-[var(--accent)] ring-offset-1",
       )}
@@ -141,13 +149,22 @@ export function TaskCard({
         <button
           onClick={onToggle}
           disabled={disabled}
-          aria-label={task.completed ? "Mark incomplete" : "Mark complete"}
+          aria-label={
+            task.completed
+              ? "Mark incomplete"
+              : task.wontDo
+                ? "Restore as active"
+                : "Mark complete"
+          }
           className={cn(
             "border-border-strong flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[4px] border bg-surface transition-colors",
             task.completed && "border-emerald-500 bg-emerald-500 text-white",
+            // Won't-do uses a red box with an X instead of green check.
+            task.wontDo && "border-rose-500 bg-rose-500 text-white",
           )}
         >
           {task.completed && <Check size={11} strokeWidth={3} />}
+          {task.wontDo && !task.completed && <XIcon size={11} strokeWidth={3} />}
         </button>
 
         {/* Fold/unfold chevron — only when this task has subtasks */}
@@ -166,13 +183,14 @@ export function TaskCard({
           </button>
         )}
 
-        {/* Title — drag handle (works for top-level AND subtasks now) */}
+        {/* Title — drag handle (works for top-level AND subtasks) */}
         <div
           {...attributes}
           {...listeners}
           className={cn(
             "min-w-0 flex-1 cursor-grab truncate text-[13.5px] active:cursor-grabbing",
-            task.completed && "text-muted-foreground line-through",
+            (task.completed || task.wontDo) &&
+              "text-muted-foreground line-through",
           )}
         >
           {task.title}
@@ -237,25 +255,17 @@ export function TaskCard({
           <GripVertical size={12} />
         </span>
 
-        {onEdit && (
-          <button
-            onClick={onEdit}
-            disabled={disabled}
-            className="text-muted-foreground hover:text-foreground hover:bg-muted/80 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded"
-            aria-label="Edit task"
-          >
-            <Pencil size={13} />
-          </button>
+        {/* Single ⋮ menu replacing the previous edit + delete buttons. */}
+        {onSetDeadline && onAddSubtask && onEdit && onToggleWontDo && (
+          <TaskMenu
+            task={task}
+            onSetDeadline={onSetDeadline}
+            onAddSubtask={onAddSubtask}
+            onEdit={onEdit}
+            onToggleWontDo={onToggleWontDo}
+            onDelete={onDelete}
+          />
         )}
-
-        <button
-          onClick={onDelete}
-          disabled={disabled}
-          className="text-muted-foreground hover:text-foreground hover:bg-muted/80 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded"
-          aria-label="Delete task"
-        >
-          <Trash2 size={13} />
-        </button>
       </div>
 
       {notesOpen && hasNotes && (

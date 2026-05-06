@@ -31,6 +31,8 @@ import {
   moveTask,
   restoreTasks,
   toggleTaskCompleted,
+  toggleTaskWontDo,
+  updateTask,
 } from "../_actions/tasks";
 import { updateUserFilters } from "../_actions/settings";
 import { QuadrantPanel, type RenderedTask } from "@/components/matrix/QuadrantPanel";
@@ -40,7 +42,10 @@ import { TagManagerModal } from "@/components/matrix/TagManagerModal";
 import { TaskCard, type TaskWithTagIds } from "@/components/matrix/TaskCard";
 import { EditTaskModal } from "@/components/matrix/EditTaskModal";
 
-const COLLAPSED_STORAGE_KEY = "gyst-collapsed-tasks";
+// localStorage key tracks which parent tasks have been EXPANDED (default
+// is "everything folded"). Renamed from the earlier "collapsed" key
+// since the semantics flipped — old data is intentionally ignored.
+const EXPANDED_STORAGE_KEY = "gyst-expanded-tasks";
 
 type UndoAction = { description: string; run: () => Promise<void> };
 
@@ -97,11 +102,14 @@ export function MatrixClient({
     return m;
   }, [initialTags]);
 
-  // ── Collapse state — persisted per-browser ──────────────────────────
-  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
+  // ── Expand state — default folded, persisted per-browser ─────────────
+  // Inverted from the previous "collapsed" semantics: the set tracks
+  // tasks the user has *explicitly expanded*. Anything not in the set
+  // (including freshly visible / freshly created parents) renders folded.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
     try {
-      const raw = localStorage.getItem(COLLAPSED_STORAGE_KEY);
+      const raw = localStorage.getItem(EXPANDED_STORAGE_KEY);
       if (!raw) return new Set();
       const arr = JSON.parse(raw);
       return new Set(Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : []);
@@ -111,19 +119,31 @@ export function MatrixClient({
   });
   useEffect(() => {
     try {
-      localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...collapsedIds]));
+      localStorage.setItem(EXPANDED_STORAGE_KEY, JSON.stringify([...expandedIds]));
     } catch {
       /* private mode / quota — ignore */
     }
-  }, [collapsedIds]);
+  }, [expandedIds]);
   const toggleCollapsed = (id: string) => {
-    setCollapsedIds((prev) => {
+    // The chevron callback inverts: expanded → folded, folded → expanded.
+    setExpandedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
   };
+
+  // All parent task ids (tasks with at least one subtask). Recomputed
+  // when tasks change. Used for "Expand all" + the hasAnyExpanded
+  // hint shown to Header so the action label flips correctly.
+  const allParentIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of tasks) if (t.parentId) set.add(t.parentId);
+    return set;
+  }, [tasks]);
+  const expandAll = () => setExpandedIds(new Set(allParentIds));
+  const collapseAll = () => setExpandedIds(new Set());
 
   // ── Render-ready task tree per quadrant ──────────────────────────────
   const filteredByQuadrant = useMemo(() => {
@@ -133,7 +153,9 @@ export function MatrixClient({
     }
 
     const passes = (t: TaskWithTagIds) => {
-      if (!filters.showCompleted && t.completed) return false;
+      // Both completed AND won't-do are treated as "off-active" by the
+      // show-completed filter — they're different categories of "done".
+      if (!filters.showCompleted && (t.completed || t.wontDo)) return false;
       if (!passesDeadlineFilter(t.deadline, filters.deadlineFilter)) return false;
       if (filters.selectedTagIds.length === 0) return true;
       return t.tagIds.some((id) => matchSet.has(id));
@@ -162,7 +184,8 @@ export function MatrixClient({
       into: RenderedTask[],
     ) => {
       const children = childrenByParent.get(task.id) ?? [];
-      const isCollapsed = collapsedIds.has(task.id);
+      // "Expanded" iff explicitly in the set; default folded.
+      const isCollapsed = !expandedIds.has(task.id);
       into.push({
         ...task,
         depth,
@@ -182,7 +205,7 @@ export function MatrixClient({
       );
     for (const t of topLevel) append(t, 0, map[t.quadrant as Quadrant]);
     return map;
-  }, [tasks, filters, initialTags, collapsedIds]);
+  }, [tasks, filters, initialTags, expandedIds]);
 
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -417,6 +440,80 @@ export function MatrixClient({
   // Mobile shows one quadrant at a time (full-height, scrollable) with
   // a tab bar to switch. Desktop renders the standard 2×2 grid.
   const [activeQuadrant, setActiveQuadrant] = useState<Quadrant>(1);
+
+  // ── Inline subtask add ──────────────────────────────────────────────
+  // When set, the SubtaskForm renders below this parent task in the
+  // QuadrantPanel. Click "Add subtask" in a task's ⋮ menu to set; type
+  // + Enter creates a subtask and the form stays open for batch entry;
+  // Esc / × / click-outside closes.
+  const [addingSubtaskTo, setAddingSubtaskTo] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!addingSubtaskTo) return;
+    const onMouseDown = (e: MouseEvent) => {
+      const target = e.target as Element | null;
+      if (!target) return;
+      // Don't close when clicking inside the form itself, or on a menu
+      // popover (which uses portals + base-ui menu data attrs).
+      if (target.closest("[data-subtask-form]")) return;
+      if (target.closest("[data-base-ui-menu]")) return;
+      if (target.closest("[role=\"menu\"]")) return;
+      setAddingSubtaskTo(null);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [addingSubtaskTo]);
+
+  // ── Action handlers wired into the task ⋮ menu ───────────────────────
+  const handleSetDeadline = (id: string, deadline: string | null) =>
+    startTransition(async () => {
+      try {
+        await updateTask({ id, deadline });
+        router.refresh();
+      } catch (err) {
+        console.error("updateTask deadline failed:", err);
+      }
+    });
+
+  const handleAddSubtask = (parentId: string) => {
+    // Auto-expand the parent so the user can see the subtask they're
+    // about to add (and any siblings already there).
+    setExpandedIds((prev) => {
+      if (prev.has(parentId)) return prev;
+      const next = new Set(prev);
+      next.add(parentId);
+      return next;
+    });
+    setAddingSubtaskTo(parentId);
+  };
+
+  const handleSubmitSubtask = (parentId: string, title: string) => {
+    const parent = tasks.find((t) => t.id === parentId);
+    if (!parent) return;
+    startTransition(async () => {
+      try {
+        await createTask({
+          title,
+          quadrant: parent.quadrant as Quadrant,
+          parentId,
+        });
+        router.refresh();
+      } catch (err) {
+        console.error("createTask (subtask) failed:", err);
+      }
+    });
+    // Form stays open — user can keep adding siblings.
+  };
+
+  const handleToggleWontDo = (id: string) =>
+    startTransition(async () => {
+      try {
+        await toggleTaskWontDo(id);
+        router.refresh();
+      } catch (err) {
+        console.error("toggleTaskWontDo failed:", err);
+      }
+    });
   const submitTask = (q: Quadrant) =>
     (input: {
       title: string;
@@ -460,6 +557,9 @@ export function MatrixClient({
         userEmail={userEmail}
         theme={initialTheme}
         onOpenTags={() => setTagsOpen(true)}
+        hasAnyExpanded={expandedIds.size > 0}
+        onExpandAll={expandAll}
+        onCollapseAll={collapseAll}
       />
 
       <div className="bg-surface border-border flex-shrink-0 border-b px-4 py-2">
@@ -489,6 +589,7 @@ export function MatrixClient({
               isActive={q === activeQuadrant}
               count={filteredByQuadrant[q].filter((t) => t.depth === 0).length}
               onClick={() => setActiveQuadrant(q)}
+              onLongHover={() => setActiveQuadrant(q)}
             />
           ))}
         </div>
@@ -523,6 +624,12 @@ export function MatrixClient({
                 onDeleteTask={handleDelete}
                 onEditTask={(t) => setEditingTask(t)}
                 onToggleCollapsed={toggleCollapsed}
+                onSetDeadline={handleSetDeadline}
+                onAddSubtask={handleAddSubtask}
+                onToggleWontDo={handleToggleWontDo}
+                addingSubtaskTo={addingSubtaskTo}
+                onSubmitSubtask={handleSubmitSubtask}
+                onCancelSubtask={() => setAddingSubtaskTo(null)}
               />
             </div>
           ))}
@@ -613,11 +720,17 @@ function MobileQuadrantTab({
   isActive,
   count,
   onClick,
+  onLongHover,
 }: {
   quadrant: Quadrant;
   isActive: boolean;
   count: number;
   onClick: () => void;
+  /** Fired after the user hovers a dragging task over this tab for ~500ms.
+   *  Used to spring-load the destination quadrant so they can keep
+   *  dragging into the now-visible body instead of just dropping on the
+   *  tab. iOS Finder-folder-drag UX. */
+  onLongHover: () => void;
 }) {
   const meta = QUADRANTS[quadrant];
   const accent = QUADRANT_ACCENT[quadrant];
@@ -627,6 +740,17 @@ function MobileQuadrantTab({
     id: `q-tab-${quadrant}`,
     data: { type: "quadrant-tab", quadrant },
   });
+
+  // Spring-load: if the dragged task hovers this tab for ~500ms, switch
+  // the visible quadrant under the user's finger so they can keep
+  // dragging to a precise position in the destination instead of being
+  // forced to drop on the tab.
+  useEffect(() => {
+    if (!isOver || isActive) return;
+    const handle = setTimeout(() => onLongHover(), 500);
+    return () => clearTimeout(handle);
+  }, [isOver, isActive, onLongHover]);
+
   return (
     <button
       ref={setNodeRef}
