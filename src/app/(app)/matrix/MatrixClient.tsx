@@ -8,7 +8,6 @@ import {
   MeasuringStrategy,
   MouseSensor,
   TouchSensor,
-  closestCenter,
   pointerWithin,
   useDroppable,
   useSensor,
@@ -365,73 +364,49 @@ export function MatrixClient({
   const activeDescendantsRef = useRef<Set<string>>(new Set());
 
   /**
-   * Collision detection with zones inside each card.
+   * Pure pointer-based collision detection over the three explicit drop
+   * zones every TaskCard registers (`before-X`, `nest-X`, `after-X`),
+   * plus the quadrant body and mobile tab containers.
    *
-   *   ┌─────────── card ───────────┐
-   *   │  top 25%  → reorder above  │
-   *   │  middle 50% → nest under   │
-   *   │  bottom 25% → reorder below │
-   *   └────────────────────────────┘
-   *
-   * Reorder zones fall through to closestCenter so @dnd-kit/sortable
-   * can pick the right insertion position; nest zone returns the
-   * `nest-X` droppable id.
-   *
-   * Without zone splitting, a card's nest droppable consumed the entire
-   * card area and reordering required pixel-precise placement in the
-   * thin gap between siblings — felt buggy on touch.
+   * Returns ONLY zone droppables — never the sortable's own id, so
+   * @dnd-kit/sortable's strategy can't apply make-room transforms (the
+   * source of the visible jumping the user reported). Cards stay
+   * perfectly still during a drag; an insertion line + NEST badge
+   * provides visual feedback.
    */
   const collisionDetection: CollisionDetection = (args) => {
     const pointerCollisions = pointerWithin(args);
+
     // Mobile quadrant tab drop targets take priority.
     const tabHit = pointerCollisions.find((c) =>
       String(c.id).startsWith("q-tab-"),
     );
     if (tabHit) return [tabHit];
 
-    const nestHit = pointerCollisions.find((c) => {
+    // before-X / nest-X / after-X. Filter self + descendants for the
+    // nest+sibling cases (can't nest into yourself or a descendant).
+    const zoneHit = pointerCollisions.find((c) => {
       const cid = String(c.id);
-      if (!cid.startsWith("nest-")) return false;
-      const taskId = cid.slice(5);
+      const isZone =
+        cid.startsWith("before-") ||
+        cid.startsWith("nest-") ||
+        cid.startsWith("after-");
+      if (!isZone) return false;
+      const dashIdx = cid.indexOf("-");
+      const taskId = cid.slice(dashIdx + 1);
       if (taskId === activeId) return false;
       if (activeDescendantsRef.current.has(taskId)) return false;
       return true;
     });
+    if (zoneHit) return [zoneHit];
 
-    if (nestHit && args.pointerCoordinates) {
-      const droppableContainer = args.droppableContainers.find(
-        (d) => d.id === nestHit.id,
-      );
-      const rect = droppableContainer?.rect.current;
-      if (rect) {
-        // Edge zones are at LEAST 18px each (so short cards still have a
-        // hittable reorder area), or 30% of card height (whichever is
-        // larger on tall cards). Middle ≈ 40% = nest.
-        const edgePx = Math.max(rect.height * 0.3, 18);
-        const fromTop = args.pointerCoordinates.y - rect.top;
-        const fromBottom = rect.bottom - args.pointerCoordinates.y;
-        if (fromTop < edgePx || fromBottom < edgePx) {
-          // Edge — fall through to filtered closestCenter for reorder.
-          // CRITICAL: filter out nest-* droppables. They share the exact
-          // same DOM rect (and thus the same center) as their sortable
-          // counterparts, so an unfiltered closestCenter returns one or
-          // the other based on iteration order — a coin flip that breaks
-          // the gap-shift visualization when "nest-X" wins.
-          return closestCenter({
-            ...args,
-            droppableContainers: args.droppableContainers.filter(
-              (d) => !String(d.id).startsWith("nest-"),
-            ),
-          });
-        }
-        // Middle zone — nest.
-        return [nestHit];
-      } else {
-        return [nestHit];
-      }
-    }
+    // Fallback: empty quadrant body.
+    const quadrantHit = pointerCollisions.find((c) =>
+      String(c.id).startsWith("quadrant-"),
+    );
+    if (quadrantHit) return [quadrantHit];
 
-    return closestCenter(args);
+    return [];
   };
 
   const onDragStart = (e: DragStartEvent) => {
@@ -482,30 +457,36 @@ export function MatrixClient({
     let newQuadrant: Quadrant;
     let insertAtFrontOfNestTarget = false;
 
+    // Determine the destination based on which zone droppable is `over`.
+    // Zone ids: "before-X" / "nest-X" / "after-X" / "quadrant-N" / "q-tab-N".
+    let zoneRefTask: TaskWithTagIds | null = null;
+    let zonePosition: "before" | "nest" | "after" | null = null;
+
     if (overId.startsWith("nest-")) {
-      // Nest: become last child of target.
-      newParentId = overId.slice(5);
-      const target = tasks.find((t) => t.id === newParentId);
-      if (!target) return;
-      newQuadrant = target.quadrant as Quadrant;
+      const targetId = overId.slice("nest-".length);
+      zoneRefTask = tasks.find((t) => t.id === targetId) ?? null;
+      if (!zoneRefTask) return;
+      zonePosition = "nest";
+      newParentId = targetId;
+      newQuadrant = zoneRefTask.quadrant as Quadrant;
+    } else if (overId.startsWith("before-") || overId.startsWith("after-")) {
+      const isBefore = overId.startsWith("before-");
+      const targetId = overId.slice(isBefore ? "before-".length : "after-".length);
+      zoneRefTask = tasks.find((t) => t.id === targetId) ?? null;
+      if (!zoneRefTask) return;
+      zonePosition = isBefore ? "before" : "after";
+      newParentId = zoneRefTask.parentId;
+      newQuadrant = zoneRefTask.quadrant as Quadrant;
     } else if (overId.startsWith("quadrant-")) {
-      // Empty quadrant body: become last top-level in that quadrant.
       newParentId = null;
       newQuadrant = Number(overId.slice("quadrant-".length)) as Quadrant;
-      insertAtFrontOfNestTarget = false; // append; same effect as first branch
+      insertAtFrontOfNestTarget = false;
     } else if (overId.startsWith("q-tab-")) {
-      // Drop on a mobile quadrant tab: move to that quadrant, top-level,
-      // append at end. Also switch the visible quadrant so the user sees
-      // their task land somewhere immediately.
       newParentId = null;
       newQuadrant = Number(overId.slice("q-tab-".length)) as Quadrant;
       setActiveQuadrant(newQuadrant);
     } else {
-      // Drop on (or near) a specific task: become its sibling.
-      const overTask = tasks.find((t) => t.id === overId);
-      if (!overTask) return;
-      newParentId = overTask.parentId;
-      newQuadrant = overTask.quadrant as Quadrant;
+      return;
     }
 
     // Build the new sibling group order.
@@ -524,27 +505,32 @@ export function MatrixClient({
       .map((t) => t.id);
 
     let newSiblingsOrder: string[];
-    if (
-      overId.startsWith("nest-") ||
-      overId.startsWith("quadrant-") ||
-      overId.startsWith("q-tab-")
-    ) {
-      // Append at end (or front, if we wanted "newest first" for nest).
+    if (zonePosition === "nest") {
+      // Nest: append to end of target's children list.
       newSiblingsOrder = insertAtFrontOfNestTarget
         ? [taskId, ...currentSiblings]
         : [...currentSiblings, taskId];
+    } else if (zonePosition === "before" && zoneRefTask) {
+      // Insert immediately before the reference task in its sibling group.
+      const refIdx = currentSiblings.indexOf(zoneRefTask.id);
+      const insertAt = refIdx === -1 ? currentSiblings.length : refIdx;
+      newSiblingsOrder = [
+        ...currentSiblings.slice(0, insertAt),
+        taskId,
+        ...currentSiblings.slice(insertAt),
+      ];
+    } else if (zonePosition === "after" && zoneRefTask) {
+      // Insert immediately after the reference task.
+      const refIdx = currentSiblings.indexOf(zoneRefTask.id);
+      const insertAt = refIdx === -1 ? currentSiblings.length : refIdx + 1;
+      newSiblingsOrder = [
+        ...currentSiblings.slice(0, insertAt),
+        taskId,
+        ...currentSiblings.slice(insertAt),
+      ];
     } else {
-      // Drop near a specific task: insert active at that task's index.
-      const overIdx = currentSiblings.indexOf(overId);
-      if (overIdx === -1) {
-        newSiblingsOrder = [...currentSiblings, taskId];
-      } else {
-        newSiblingsOrder = [
-          ...currentSiblings.slice(0, overIdx),
-          taskId,
-          ...currentSiblings.slice(overIdx),
-        ];
-      }
+      // Quadrant body / quadrant tab — append.
+      newSiblingsOrder = [...currentSiblings, taskId];
     }
 
     // ── Optimistic local update ───────────────────────────────────────
@@ -975,13 +961,13 @@ function MobileQuadrantTab({
     data: { type: "quadrant-tab", quadrant },
   });
 
-  // Spring-load: if the dragged task hovers this tab for ~500ms, switch
+  // Spring-load: if the dragged task hovers this tab for ~700ms, switch
   // the visible quadrant under the user's finger so they can keep
-  // dragging to a precise position in the destination instead of being
-  // forced to drop on the tab.
+  // dragging to a precise position in the destination. Matches the
+  // task-card nest-zone spring-load timing.
   useEffect(() => {
     if (!isOver || isActive) return;
-    const handle = setTimeout(() => onLongHover(), 500);
+    const handle = setTimeout(() => onLongHover(), 700);
     return () => clearTimeout(handle);
   }, [isOver, isActive, onLongHover]);
 
